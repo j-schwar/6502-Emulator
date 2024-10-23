@@ -4,7 +4,7 @@
 
 use std::{fmt::Display, rc::Rc, sync::Mutex};
 
-use super::core::{Bus, BusPtr, EmulationError, Ptr};
+use super::core::{Bus, SharedBus, EmulationError, Ptr};
 
 /// Operand types for [`Instruction`].
 #[derive(Clone, Copy, Debug)]
@@ -238,13 +238,13 @@ struct Registers {
 }
 
 pub struct Cpu {
-    bus: BusPtr,
+    bus: SharedBus,
     registers: Registers,
 }
 
 impl Cpu {
     /// Constructs a new [`Cpu`] instance which will use the given data and address busses.
-    pub fn new(bus: BusPtr) -> Self {
+    pub fn new(bus: SharedBus) -> Self {
         Self {
             bus,
             registers: Default::default(),
