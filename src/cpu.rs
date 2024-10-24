@@ -1,6 +1,6 @@
 //! 6502 CPU Emulator
 
-use crate::EmulationComponent;
+use crate::{EmulationComponent, EmulationError};
 
 use super::core::{self, BusDir, Ptr, Result, SharedBus};
 
@@ -91,16 +91,32 @@ impl Cpu {
         self.registers.pc = self.read_u16(Ptr::RES).await;
     }
 
-    async fn fetch_and_decode(&mut self) -> Result<()> {
+    async fn fetch_and_execute(&mut self) -> Result<()> {
         let opcode = self.read_u8(Ptr::from(self.registers.pc)).await;
-        todo!();
+
+        let instruction_size = match opcode {
+            // NOP
+            0xea => {
+                log::debug!(target: "instr", "NOP");
+                self.end_cycle().await;
+                self.end_cycle().await;
+                1
+            }
+
+            _ => return Err(EmulationError::InvalidInstruction),
+        };
+
+        self.registers.pc = self.registers.pc.wrapping_add(instruction_size);
+        Ok(())
     }
 }
 
 impl EmulationComponent for Cpu {
     async fn run(&mut self) -> Result<()> {
         self.reset().await;
-        Ok(())
+        loop {
+            self.fetch_and_execute().await?;
+        }
     }
 }
 
