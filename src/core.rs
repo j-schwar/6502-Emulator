@@ -30,6 +30,8 @@ impl Display for EmulationError {
     }
 }
 
+pub type Result<T> = std::result::Result<T, EmulationError>;
+
 impl std::error::Error for EmulationError {}
 
 /// A 16-bit pointer.
@@ -83,7 +85,7 @@ impl From<Ptr> for u16 {
 impl FromStr for Ptr {
     type Err = EmulationError;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         if s.len() > 4 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(EmulationError::InvalidPtr);
         }
@@ -153,18 +155,18 @@ impl SharedBus {
 
     /// Sets the value on the data bus.
     pub fn set_data(&mut self, value: u8) {
-        self.with_mut_ref(|bus| bus.data = value)
+        self.with_mut_ref(|bus| bus.data = value);
     }
 }
 
 /// Trait for emulation components.
 pub trait EmulationComponent {
-    async fn run(&mut self);
+    async fn run(&mut self) -> Result<()>;
 }
 
 #[derive(Default)]
 pub struct Executor<'a> {
-    queue: Vec<Pin<Box<dyn Future<Output = ()> + 'a>>>,
+    queue: Vec<Pin<Box<dyn Future<Output = Result<()>> + 'a>>>,
 }
 
 impl<'a> Executor<'a> {
@@ -178,12 +180,26 @@ impl<'a> Executor<'a> {
     }
 
     /// Polls all components in this executor once.
-    pub fn poll_once(&mut self) {
+    pub fn poll_once(&mut self) -> Result<()> {
         for future in self.queue.as_mut_slice() {
             let waker = noop_waker();
             let mut cx = Context::from_waker(&waker);
-            let _ = future.as_mut().poll(&mut cx);
+            match future.as_mut().poll(&mut cx) {
+                Poll::Ready(Err(err)) => return Err(err),
+                _ => {}
+            }
         }
+
+        Ok(())
+    }
+
+    /// Polls all components `n` times.
+    pub fn poll_n(&mut self, n: u32) -> Result<()> {
+        for _ in 0..n {
+            self.poll_once()?;
+        }
+
+        Ok(())
     }
 }
 

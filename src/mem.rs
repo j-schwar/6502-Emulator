@@ -1,6 +1,6 @@
 //! Memory components.
 
-use super::core::{self, BusDir, EmulationComponent, SharedBus};
+use super::core::{self, BusDir, EmulationComponent, Result, SharedBus};
 
 pub struct Rom {
     bus: SharedBus,
@@ -34,7 +34,7 @@ impl Rom {
 }
 
 impl EmulationComponent for Rom {
-    async fn run(&mut self) {
+    async fn run(&mut self) -> Result<()> {
         loop {
             self.cycle();
             core::wait_for_next_cycle().await;
@@ -55,15 +55,15 @@ mod test {
         executor.push_component_ref(&mut rom);
 
         bus.set_address(Ptr::from(0x0001));
-        executor.poll_once();
+        executor.poll_once().unwrap();
         assert_eq!(1, bus.data());
 
         bus.set_address(Ptr::from(0x0002));
-        executor.poll_once();
+        executor.poll_once().unwrap();
         assert_eq!(2, bus.data());
 
         bus.set_address(Ptr::from(0x0003));
-        executor.poll_once();
+        executor.poll_once().unwrap();
         assert_eq!(3, bus.data());
     }
 }
