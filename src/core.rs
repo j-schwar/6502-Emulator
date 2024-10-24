@@ -183,22 +183,22 @@ pub trait EmulationComponent {
 
 #[derive(Default)]
 pub struct Executor<'a> {
-    queue: Vec<Pin<Box<dyn Future<Output = Result<()>> + 'a>>>,
+    futures: Vec<Pin<Box<dyn Future<Output = Result<()>> + 'a>>>,
 }
 
 impl<'a> Executor<'a> {
-    /// Adds a reference to an [`EmulationComponent`] to this executor. Components are polled in the
-    /// order they're added.
-    pub fn push_component_ref<C>(&mut self, c: &'a mut C)
+    /// Adds a future (usually the result of a call to [`EmulationComponent::run`]) to this
+    /// executor. Futures are polled in the order their added.
+    pub fn add_task<F>(&mut self, f: F)
     where
-        C: EmulationComponent,
+        F: Future<Output = Result<()>> + 'a,
     {
-        self.queue.push(Box::pin(c.run()));
+        self.futures.push(Box::pin(f));
     }
 
-    /// Polls all components in this executor once.
+    /// Polls all futures in this executor once.
     pub fn poll_once(&mut self) -> Result<()> {
-        for future in self.queue.as_mut_slice() {
+        for future in self.futures.as_mut_slice() {
             let waker = noop_waker();
             let mut cx = Context::from_waker(&waker);
             match future.as_mut().poll(&mut cx) {
@@ -210,7 +210,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    /// Polls all components `n` times.
+    /// Polls all futures `n` times.
     pub fn poll_n(&mut self, n: u32) -> Result<()> {
         for _ in 0..n {
             self.poll_once()?;

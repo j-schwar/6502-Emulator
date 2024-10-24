@@ -137,7 +137,7 @@ mod test {
 
         {
             let mut executor = Executor::default();
-            executor.push_component_ref(&mut cpu);
+            executor.add_task(cpu.run());
 
             // Data bus should not be clobbered, set to noop instruction.
             bus.set_data(0xea);

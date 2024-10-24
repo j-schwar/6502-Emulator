@@ -52,7 +52,7 @@ mod test {
         let mut rom = Rom::from_data(bus.clone(), 0, vec![0, 1, 2, 3]);
 
         let mut executor = Executor::default();
-        executor.push_component_ref(&mut rom);
+        executor.add_task(rom.run());
 
         bus.set_address(Ptr::from(0x0001), BusDir::Read);
         executor.poll_once().unwrap();
