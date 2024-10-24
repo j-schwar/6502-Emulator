@@ -66,6 +66,11 @@ impl Ptr {
     pub fn raw(self) -> u16 {
         self.0
     }
+
+    /// Wapping pointer arithmetic. Computes `self + rhs` wrapping on overflow.
+    pub fn wrapping_add(self, rhs: u16) -> Ptr {
+        self.0.wrapping_add(rhs).into()
+    }
 }
 
 impl From<u16> for Ptr {
@@ -97,7 +102,7 @@ impl FromStr for Ptr {
 
 impl Display for Ptr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:04x}", self.0)
+        write!(f, "{:#04x}", self.0)
     }
 }
 
@@ -106,6 +111,15 @@ pub enum BusDir {
     #[default]
     Read,
     Write,
+}
+
+impl Display for BusDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            BusDir::Read => write!(f, "R"),
+            BusDir::Write => write!(f, "W"),
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -143,9 +157,12 @@ impl SharedBus {
         self.with_ref(|bus| bus.address)
     }
 
-    /// Sets the value on the address bus.
-    pub fn set_address(&mut self, ptr: Ptr) {
-        self.with_mut_ref(|bus| bus.address = ptr)
+    /// Sets the value on the address bus along with the direction.
+    pub fn set_address(&mut self, ptr: Ptr, dir: BusDir) {
+        self.with_mut_ref(|bus| {
+            bus.address = ptr;
+            bus.dir = dir;
+        });
     }
 
     /// Returns the value on the data bus.

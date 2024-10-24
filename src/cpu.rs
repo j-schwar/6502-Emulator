@@ -4,7 +4,9 @@
 
 use std::{fmt::Display, rc::Rc, sync::Mutex};
 
-use super::core::{Bus, SharedBus, EmulationError, Ptr};
+use crate::EmulationComponent;
+
+use super::core::{self, Bus, BusDir, EmulationError, Ptr, Result, SharedBus};
 
 /// Operand types for [`Instruction`].
 #[derive(Clone, Copy, Debug)]
@@ -249,5 +251,101 @@ impl Cpu {
             bus,
             registers: Default::default(),
         }
+    }
+
+    /// Signals the end of the CPU cycle.
+    ///
+    /// Along with calling [`core::wait_for_next_cycle`], this function performs additional logging
+    /// of the bus and register state for debugging.
+    async fn end_cycle(&self) {
+        log::trace!(
+            target: "reg",
+            "PC: {:04x}, A: {:02x}, X: {:02x}, Y: {:02x}, SR: {:02x}, SP: {:02x}",
+            self.registers.pc,
+            self.registers.ac,
+            self.registers.x,
+            self.registers.y,
+            self.registers.sr,
+            self.registers.sp,
+        );
+
+        self.bus.with_ref(
+            |bus| log::trace!(target: "bus", "{} {} {:02x}", bus.address, bus.dir, bus.data),
+        );
+        core::wait_for_next_cycle().await;
+    }
+    /// Reads a single byte from the bus at a given address.
+    ///
+    /// This operation takes a single clock cycle.
+    async fn read_u8(&mut self, addr: Ptr) -> u8 {
+        self.bus.set_address(addr, BusDir::Read);
+        self.end_cycle().await;
+        self.bus.data()
+    }
+
+    /// Reads a 16-bit word (little endian) from the bus at a given address.
+    ///
+    /// This operation performs two reads and takes 2 clock cycles.
+    async fn read_u16(&mut self, addr: Ptr) -> u16 {
+        let mut word = 0u16;
+        word |= self.read_u8(addr).await as u16;
+        word |= (self.read_u8(addr.wrapping_add(1)).await as u16) << 8;
+        word
+    }
+
+    /// Invokes the processor's reset sequence.
+    ///
+    /// All registers are zeroed, and the program counter is set to the reset vector located at
+    /// address 0xfffc.
+    async fn reset(&mut self) {
+        // The spec states that there is a 7-cycle initialization period for the processor before it
+        // actually does anything. We'll skip emulating this since idk what it's actually doing for
+        // those cycles.
+
+        // Reset registers.
+        self.registers = Default::default();
+
+        // Load reset vector into program counter.
+        self.registers.pc = self.read_u16(Ptr::RES).await;
+    }
+
+    async fn fetch_and_decode(&mut self) -> Result<Instruction> {
+        let x = self.read_u8(Ptr::from(self.registers.pc)).await;
+        todo!()
+    }
+}
+
+impl EmulationComponent for Cpu {
+    async fn run(&mut self) -> Result<()> {
+        self.reset().await;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::core::Executor;
+
+    fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+
+    #[test]
+    fn reset() {
+        init();
+        let mut bus = SharedBus::default();
+        let mut cpu = Cpu::new(bus.clone());
+
+        {
+            let mut executor = Executor::default();
+            executor.push_component_ref(&mut cpu);
+
+            // Data bus should not be clobbered, set to noop instruction.
+            bus.set_data(0xea);
+            executor.poll_n(3).unwrap();
+        }
+
+        assert_eq!(cpu.registers.pc, 0xeaea);
     }
 }

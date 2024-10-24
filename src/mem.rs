@@ -54,15 +54,15 @@ mod test {
         let mut executor = Executor::default();
         executor.push_component_ref(&mut rom);
 
-        bus.set_address(Ptr::from(0x0001));
+        bus.set_address(Ptr::from(0x0001), BusDir::Read);
         executor.poll_once().unwrap();
         assert_eq!(1, bus.data());
 
-        bus.set_address(Ptr::from(0x0002));
+        bus.set_address(Ptr::from(0x0002), BusDir::Read);
         executor.poll_once().unwrap();
         assert_eq!(2, bus.data());
 
-        bus.set_address(Ptr::from(0x0003));
+        bus.set_address(Ptr::from(0x0003), BusDir::Read);
         executor.poll_once().unwrap();
         assert_eq!(3, bus.data());
     }
