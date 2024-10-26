@@ -1,8 +1,6 @@
 //! 6502 CPU Emulator
 
-use crate::{EmulationComponent, EmulationError};
-
-use super::core::{self, BusDir, Ptr, Result, SharedBus};
+use crate::emu::{self, BusDir, EmulationError, Ptr, SharedBus};
 
 /// Models CPU state.
 #[derive(Clone, Copy, Debug, Default)]
@@ -54,7 +52,7 @@ impl Cpu {
         self.bus.with_ref(
             |bus| log::trace!(target: "bus", "{} {} {:02x}", bus.address, bus.dir, bus.data),
         );
-        core::wait_for_next_cycle().await;
+        emu::wait_for_next_cycle().await;
     }
     /// Reads a single byte from the bus at a given address.
     ///
@@ -91,7 +89,7 @@ impl Cpu {
         self.registers.pc = self.read_u16(Ptr::RES).await;
     }
 
-    async fn fetch_and_execute(&mut self) -> Result<()> {
+    async fn fetch_and_execute(&mut self) -> emu::Result<()> {
         let opcode = self.read_u8(Ptr::from(self.registers.pc)).await;
 
         let instruction_size = match opcode {
@@ -109,10 +107,8 @@ impl Cpu {
         self.registers.pc = self.registers.pc.wrapping_add(instruction_size);
         Ok(())
     }
-}
 
-impl EmulationComponent for Cpu {
-    async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> emu::Result<()> {
         self.reset().await;
         loop {
             self.fetch_and_execute().await?;
@@ -123,7 +119,7 @@ impl EmulationComponent for Cpu {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::core::Executor;
+    use crate::emu::Executor;
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();

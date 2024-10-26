@@ -1,7 +1,8 @@
-use crate::{core::*, mem::Rom};
+use crate::emu::{SharedBus, Executor};
+use crate::mem::Rom;
 
-mod core;
 mod cpu;
+mod emu;
 mod mem;
 
 fn main() {

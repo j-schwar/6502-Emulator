@@ -1,6 +1,6 @@
 //! Memory components.
 
-use super::core::{self, BusDir, EmulationComponent, Result, SharedBus};
+use super::emu::{self, BusDir, Result, SharedBus};
 
 pub struct Rom {
     bus: SharedBus,
@@ -31,20 +31,19 @@ impl Rom {
             }
         });
     }
-}
 
-impl EmulationComponent for Rom {
-    async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         loop {
             self.cycle();
-            core::wait_for_next_cycle().await;
+            emu::wait_for_next_cycle().await;
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::{core::*, *};
+    use super::*;
+    use crate::emu::*;
 
     #[test]
     fn rom_sets_data_bus() {
