@@ -1,5 +1,7 @@
 //! 6502 CPU Emulator
 
+use with_ref::WithRef;
+
 use crate::emu::{self, BusDir, EmulationError, Ptr, SharedBus};
 
 /// Models CPU state.

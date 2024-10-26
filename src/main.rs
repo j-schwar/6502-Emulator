@@ -1,4 +1,4 @@
-use crate::emu::{SharedBus, Executor};
+use crate::emu::{Executor, SharedBus};
 use crate::mem::Rom;
 
 mod cpu;

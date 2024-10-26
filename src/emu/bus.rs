@@ -1,4 +1,5 @@
-use std::{cell::RefCell, fmt::Display, rc::Rc};
+use std::{fmt::Display, rc::Rc};
+use with_ref::{ScopedRefCell, WithRef};
 
 use crate::emu::Ptr;
 
@@ -29,32 +30,16 @@ pub struct Bus {
 ///
 /// This type contains convenience methods for interacting with specific parts of the bus.
 #[derive(Default, Clone)]
-pub struct SharedBus(Rc<RefCell<Bus>>);
+pub struct SharedBus(Rc<ScopedRefCell<Bus>>);
 
 impl SharedBus {
-    /// Executes a closure while holding a reference to the shared bus.
-    pub fn with_ref<F, T>(&self, f: F) -> T
-    where
-        F: FnOnce(&Bus) -> T,
-    {
-        f(&self.0.borrow())
-    }
-
-    /// Executes a closure while holding a mutable reference to the shared bus.
-    pub fn with_mut_ref<F, T>(&mut self, f: F) -> T
-    where
-        F: FnOnce(&mut Bus) -> T,
-    {
-        f(&mut self.0.as_ref().borrow_mut())
-    }
-
     /// Returns the value of the address bus.
     pub fn address(&self) -> Ptr {
         self.with_ref(|bus| bus.address)
     }
 
     /// Sets the value on the address bus along with the direction.
-    pub fn set_address(&mut self, ptr: Ptr, dir: BusDir) {
+    pub fn set_address(&self, ptr: Ptr, dir: BusDir) {
         self.with_mut_ref(|bus| {
             bus.address = ptr;
             bus.dir = dir;
@@ -67,7 +52,25 @@ impl SharedBus {
     }
 
     /// Sets the value on the data bus.
-    pub fn set_data(&mut self, value: u8) {
+    pub fn set_data(&self, value: u8) {
         self.with_mut_ref(|bus| bus.data = value);
+    }
+}
+
+impl WithRef for SharedBus {
+    type Inner = Bus;
+
+    fn with_ref<F, T>(&self, f: F) -> T
+    where
+        F: FnOnce(&Self::Inner) -> T,
+    {
+        self.0.with_ref(f)
+    }
+
+    fn with_mut_ref<F, T>(&self, f: F) -> T
+    where
+        F: FnOnce(&mut Self::Inner) -> T,
+    {
+        self.0.with_mut_ref(f)
     }
 }

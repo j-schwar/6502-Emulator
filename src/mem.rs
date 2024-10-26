@@ -1,5 +1,7 @@
 //! Memory components.
 
+use with_ref::WithRef;
+
 use super::emu::{self, BusDir, Result, SharedBus};
 
 pub struct Rom {
