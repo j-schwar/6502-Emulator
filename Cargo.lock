@@ -73,6 +73,7 @@ dependencies = [
  "env_logger",
  "log",
  "noop-waker",
+ "with_ref",
 ]
 
 [[package]]
@@ -235,3 +236,8 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "with_ref"
+version = "0.1.0"
+source = "git+https://github.com/j-schwar/with_ref.git#5b292d8ebd3337b591dfe8886ada21226d263883"

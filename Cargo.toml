@@ -7,3 +7,4 @@ edition = "2021"
 env_logger = "0.11.5"
 log = "0.4.22"
 noop-waker = "0.1.0"
+with_ref = { git = "https://github.com/j-schwar/with_ref.git" }
