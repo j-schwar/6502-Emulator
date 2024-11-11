@@ -2,7 +2,49 @@
 
 use with_ref::WithRef;
 
+use crate::emu::Ptr;
+
 use super::emu::{self, BusDir, Result, SharedBus};
+
+/// Read-only memory component which listens on the bus in the 2-byte reset vector location.
+///
+/// This component is intended as a convenience component for testing or in cases where the whole
+/// address space for RAM/ROM doesn't include the reset vector.
+pub struct ResetVector {
+    bus: SharedBus,
+    vector: u16,
+}
+
+impl ResetVector {
+    /// Constructs a new reset vector component.
+    ///
+    /// `addr` is the 2-byte value located at 0xfffc.
+    pub fn new(bus: SharedBus, addr: u16) -> Self {
+        ResetVector { bus, vector: addr }
+    }
+
+    /// Main loop for this component.
+    pub async fn run(&self) -> emu::Result<()> {
+        const RES_LOW: Ptr = Ptr::RES;
+        const RES_HIGH: Ptr = Ptr::RES.wrapping_add(1);
+
+        loop {
+            self.bus.with_mut_ref(|bus| match bus.address {
+                RES_LOW => {
+                    bus.data = (self.vector & 0x00ff) as u8;
+                    log::debug!(target: "reset_vector", "{} R {:02x}", bus.address, bus.data);
+                }
+                RES_HIGH => {
+                    bus.data = (self.vector >> 8) as u8;
+                    log::debug!(target: "reset_vector", "{} R {:02x}", bus.address, bus.data);
+                }
+                _ => {}
+            });
+
+            emu::wait_for_next_cycle().await;
+        }
+    }
+}
 
 pub struct Rom {
     bus: SharedBus,
