@@ -65,7 +65,7 @@ impl<'a> Executor<'a> {
             let waker = noop_waker::noop_waker();
             let mut cx = Context::from_waker(&waker);
             if let Poll::Ready(Err(err)) = future.as_mut().poll(&mut cx) {
-                return Err(err)
+                return Err(err);
             }
         }
 

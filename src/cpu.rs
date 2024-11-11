@@ -187,7 +187,7 @@ impl Cpu {
                     r.pc = r.pc.wrapping_add(1);
                     self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
                 });
- 
+
                 log::info!(target: "instr", "{} ORA #{:02x}", instruction_addr, data);
                 self.end_cycle().await;
 
