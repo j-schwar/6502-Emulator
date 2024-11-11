@@ -70,6 +70,6 @@ impl FromStr for Ptr {
 
 impl Display for Ptr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#04x}", self.0)
+        write!(f, "{:#06x}", self.0)
     }
 }

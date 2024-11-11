@@ -6,6 +6,8 @@ use std::{
 
 use crate::emu;
 
+use super::EmulationError;
+
 struct CycleFuture {
     remaining_cycles: u32,
 }
@@ -55,7 +57,7 @@ impl<'a> Executor<'a> {
     }
 
     /// Polls all futures in this executor once.
-    pub fn poll_once(&mut self) -> emu::Result<()> {
+    pub fn poll(&mut self) -> emu::Result<()> {
         for future in self.futures.as_mut_slice() {
             let waker = noop_waker::noop_waker();
             let mut cx = Context::from_waker(&waker);
@@ -71,9 +73,23 @@ impl<'a> Executor<'a> {
     /// Polls all futures `n` times.
     pub fn poll_n(&mut self, n: u32) -> emu::Result<()> {
         for _ in 0..n {
-            self.poll_once()?;
+            self.poll()?;
         }
 
         Ok(())
+    }
+
+    /// Continuously polls this executor until [`EmulationError::Halt`] is signaled or another error
+    /// is thrown.
+    pub fn poll_until_halt(&mut self) -> emu::Result<()> {
+        loop {
+            if let Err(err) = self.poll() {
+                if err == EmulationError::Halt {
+                    return Ok(());
+                } else {
+                    return Err(err);
+                }
+            }
+        }
     }
 }

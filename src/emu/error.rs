@@ -3,11 +3,12 @@
 use std::fmt::Display;
 
 /// Errors return by emulation operations.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum EmulationError {
     InvalidPtr,
     InvalidInstruction,
     Decode,
+    Halt,
 }
 
 impl Display for EmulationError {
@@ -16,6 +17,7 @@ impl Display for EmulationError {
             EmulationError::InvalidPtr => write!(f, "invalid pointer"),
             EmulationError::InvalidInstruction => write!(f, "invalid instruction"),
             EmulationError::Decode => write!(f, "decode error"),
+            EmulationError::Halt => write!(f, "halt"),
         }
     }
 }

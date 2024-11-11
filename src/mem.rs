@@ -21,7 +21,7 @@ impl Rom {
 }
 
 impl Rom {
-    fn cycle(&mut self) {
+    fn cycle(&self) {
         self.bus.with_mut_ref(|bus| {
             if bus.dir == BusDir::Read {
                 let addr = bus.address.raw() as usize;
@@ -29,12 +29,14 @@ impl Rom {
                     let index = (addr - self.start_addr) as usize;
                     let value = self.memory[index];
                     bus.data = value;
+
+                    log::debug!(target: "rom", "{} R {:02x}", bus.address, value);
                 }
             }
         });
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         loop {
             self.cycle();
             emu::wait_for_next_cycle().await;
@@ -49,22 +51,22 @@ mod test {
 
     #[test]
     fn rom_sets_data_bus() {
-        let mut bus = SharedBus::default();
+        let bus = SharedBus::default();
         let mut rom = Rom::from_data(bus.clone(), 0, vec![0, 1, 2, 3]);
 
         let mut executor = Executor::default();
         executor.add_task(rom.run());
 
         bus.set_address(Ptr::from(0x0001), BusDir::Read);
-        executor.poll_once().unwrap();
+        executor.poll().unwrap();
         assert_eq!(1, bus.data());
 
         bus.set_address(Ptr::from(0x0002), BusDir::Read);
-        executor.poll_once().unwrap();
+        executor.poll().unwrap();
         assert_eq!(2, bus.data());
 
         bus.set_address(Ptr::from(0x0003), BusDir::Read);
-        executor.poll_once().unwrap();
+        executor.poll().unwrap();
         assert_eq!(3, bus.data());
     }
 }
