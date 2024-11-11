@@ -64,9 +64,8 @@ impl<'a> Executor<'a> {
         for future in self.futures.as_mut_slice() {
             let waker = noop_waker::noop_waker();
             let mut cx = Context::from_waker(&waker);
-            match future.as_mut().poll(&mut cx) {
-                Poll::Ready(Err(err)) => return Err(err),
-                _ => {}
+            if let Poll::Ready(Err(err)) = future.as_mut().poll(&mut cx) {
+                return Err(err)
             }
         }
 

@@ -68,7 +68,7 @@ impl Rom {
             if bus.dir == BusDir::Read {
                 let addr = bus.address.raw() as usize;
                 if addr >= self.start_addr && addr < (self.start_addr + self.memory.len()) {
-                    let index = (addr - self.start_addr) as usize;
+                    let index = addr - self.start_addr;
                     let value = self.memory[index];
                     bus.data = value;
 
