@@ -239,52 +239,38 @@ impl Cpu {
 mod test {
     use super::*;
     use crate::emu::Executor;
-    use crate::mem::Rom;
+    use crate::mem::{ResetVector, Rom};
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
     }
 
-    // #[test]
-    // fn reset() {
-    //     init();
-    //     let bus = SharedBus::default();
-    //     let cpu = Cpu::new(bus.clone());
+    /// Executes given machine code until the CPU halts, where it then returns the state of the CPU
+    /// registers.
+    fn exec(machine_code: impl AsRef<[u8]>) -> emu::Result<Registers> {
+        let bus = SharedBus::default();
+        let cpu = Cpu::new(bus.clone());
+        let rom = Rom::from_data(bus.clone(), 0xf000, machine_code.as_ref());
+        let res = ResetVector::new(bus.clone(), 0xf000);
 
-    //     let mut executor = Executor::default();
-    //     executor.add_task(cpu.run());
+        let mut executor = Executor::default();
+        executor.add_task(cpu.run());
+        executor.add_task(rom.run());
+        executor.add_task(res.run());
+        executor.poll_until_halt()?;
 
-    //     // Data bus should not be clobbered, set to noop instruction.
-    //     bus.set_data(0xea);
-    //     executor.poll_n(3).unwrap();
-
-    //     assert_eq!(cpu.registers.with_ref(|r| r.pc), 0xeaea);
-    // }
+        Ok(cpu.registers.with_ref(|r| *r))
+    }
 
     #[test]
     fn ora_immediate() -> emu::Result<()> {
         init();
-        let bus = SharedBus::default();
-        let cpu = Cpu::new(bus.clone());
-        let instructions = Rom::from_data(
-            bus.clone(),
-            0xf000,
-            [
-                0x09, 0x42, // ORA #01
-                0x02, // Halt
-            ],
-        );
-        let res_vector = Rom::from_data(bus.clone(), 0xfffc, [0x00, 0xf0]);
-
-        let mut executor = Executor::default();
-        executor.add_task(cpu.run());
-        executor.add_task(instructions.run());
-        executor.add_task(res_vector.run());
-        executor.poll_until_halt()?;
-
-        cpu.registers.with_ref(|r| {
-            assert_eq!(0x42, r.ac);
-        });
+        let r = exec([
+            0x09, 0x01, // ORA #01,
+            0x09, 0x02, // ORA #02,
+            0x02, // Halt
+        ])?;
+        assert_eq!(0x03, r.ac);
         Ok(())
     }
 }
