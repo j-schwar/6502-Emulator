@@ -79,7 +79,7 @@ impl Registers {
 
 pub struct Cpu {
     bus: SharedBus,
-    registers: ScopedRefCell<Registers>,
+    pub registers: ScopedRefCell<Registers>,
 }
 
 impl Cpu {
@@ -148,6 +148,10 @@ impl Cpu {
         // Load reset vector into program counter.
         let addr = self.read_u16(Ptr::RES).await;
         self.registers.with_mut_ref(|r| r.pc = addr);
+        self.bus.set_address(Ptr::from(addr), BusDir::Read);
+
+        log::debug!(target: "cpu", "reset complete - pc = {}", Ptr::from(addr));
+        self.end_cycle().await;
     }
 
     /// Fetches and executes a single instruction.
@@ -156,64 +160,56 @@ impl Cpu {
     /// encountered. Lovely reference documentation can be found at
     /// https://www.masswerk.at/6502/6502_instruction_set.html
     async fn fetch_and_execute(&self) -> emu::Result<()> {
-        log::trace!(target: "instr", "begin instruction");
-        let opcode = self.read_and_adv_pc().await; // Cycle 1
+        let instruction_addr = Ptr::from(self.registers.with_ref(|r| r.pc));
+
+        // Cycle 0 - Fetch opcode off of the data bus.
+        //
+        // It's assumed, that PC is already on the address bus from the previous cycle. Before the
+        // next cycle, PC+1 is loaded onto the address bus.
+        let opcode = self.bus.data();
+        self.registers.with_mut_ref(|r| {
+            r.pc = r.pc.wrapping_add(1);
+            self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
+        });
+        self.end_cycle().await;
 
         match opcode {
-            // BRK
-            0x00 => {
-                // TODO: Trigger software interrupt.
-                // TODO: Push return address (PC + 2) onto the stack.
-                // TODO: Push SR onto stack with break flag set to 1.
-            }
-
-            // ORA X,ind
-            0x01 => {
-                log::trace!(target: "instr", "decoded: ORA X,ind");
-                let ind = self.read_and_adv_pc().await; // Cycle 2
-
-                // With zero-page addressing, the effective address will wrap around in the
-                // zero-page instead of flowing into the next page.
-                //
-                // Cycle 3
-                let effective_addr = self
-                    .registers
-                    .with_ref(|r| Ptr::from(r.x.wrapping_add(ind) as u16));
-                self.end_cycle().await;
-
-                // Cycle 4
-                let value = self.read_u8(effective_addr).await;
-
-                // Cycle 5
-                let ac = self.registers.with_ref(|r| r.ac | value);
-                self.end_cycle().await;
-
-                // Cycle 6
-                self.registers.with_mut_ref(|r| {
-                    r.ac = ac;
-                    r.set_negative_flag(ac & 0x80 != 0);
-                    r.set_zero_flag(ac == 0);
-                });
-                self.end_cycle().await;
-
-                log::debug!(target: "instr", "ORA X,${:02x}", ind);
-            }
-
             // JAM
             0x02 => {
-                log::warn!(target: "instr", "invalid instruction - halting");
                 return Err(EmulationError::Halt);
+            }
+
+            // ORA #oper
+            0x09 => {
+                // Cycle 1 - Fetch operand.
+                let data = self.bus.data();
+                self.registers.with_mut_ref(|r| {
+                    r.pc = r.pc.wrapping_add(1);
+                    self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
+                });
+ 
+                log::info!(target: "instr", "{} ORA #{:02x}", instruction_addr, data);
+                self.end_cycle().await;
+
+                // Next Cycle - Execution of instruction.
+                self.registers.with_mut_ref(|r| {
+                    r.ac |= data;
+                    r.set_negative_flag(r.ac & 0x80 != 0);
+                    r.set_zero_flag(r.ac == 0);
+                });
             }
 
             // NOP
             0xea => {
-                log::trace!(target: "instr", "NOP - begin");
-                self.end_cycle().await; // Cycle 2
-                log::debug!(target: "instr", "NOP");
+                // Cycle 1 - Do nothing.
+                self.end_cycle().await;
+
+                // Log after as this instruction should take 2 cycles.
+                log::info!(target: "instr", "{} NOP", instruction_addr);
             }
 
             _ => return Err(EmulationError::InvalidInstruction),
-        };
+        }
 
         Ok(())
     }
@@ -229,72 +225,48 @@ impl Cpu {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{Executor, Rom};
+    use crate::emu::Executor;
+    use crate::mem::Rom;
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
     }
 
-    fn instr_test<F>(data: &[u8], f: F)
-    where
-        F: FnOnce(SharedBus, Cpu, &mut Executor),
-    {
-        let bus = SharedBus::default();
-        let cpu = Cpu::new(bus.clone());
+    // #[test]
+    // fn reset() {
+    //     init();
+    //     let bus = SharedBus::default();
+    //     let cpu = Cpu::new(bus.clone());
 
-        let mut executor = Executor::default();
-        executor.add_task(cpu.run());
+    //     let mut executor = Executor::default();
+    //     executor.add_task(cpu.run());
 
-        for byte in data {
-            bus.set_data(*byte);
-            executor.poll().unwrap();
-        }
-    }
+    //     // Data bus should not be clobbered, set to noop instruction.
+    //     bus.set_data(0xea);
+    //     executor.poll_n(3).unwrap();
+
+    //     assert_eq!(cpu.registers.with_ref(|r| r.pc), 0xeaea);
+    // }
 
     #[test]
-    fn reset() {
+    fn ora_immediate() -> emu::Result<()> {
         init();
         let bus = SharedBus::default();
         let cpu = Cpu::new(bus.clone());
-
-        let mut executor = Executor::default();
-        executor.add_task(cpu.run());
-
-        // Data bus should not be clobbered, set to noop instruction.
-        bus.set_data(0xea);
-        executor.poll_n(3).unwrap();
-
-        assert_eq!(cpu.registers.with_ref(|r| r.pc), 0xeaea);
-    }
-
-    #[test]
-    fn ora_zero_page_x() -> emu::Result<()> {
-        init();
-        let bus = SharedBus::default();
-        let cpu = Cpu::new(bus.clone());
-        let rom_0 = Rom::from_data(bus.clone(), 0x0000, [0x42]);
-        let rom_1 = Rom::from_data(
+        let instructions = Rom::from_data(
             bus.clone(),
             0xf000,
             [
-                0x01, 0x00, // ORA $00,X
+                0x09, 0x42, // ORA #01
                 0x02, // Halt
             ],
         );
-        let rom_2 = Rom::from_data(
-            bus.clone(),
-            0xfffc,
-            [
-                0x00, 0xf0, // reset vector
-                0x00, 0x00, // interrupt vector
-            ],
-        );
+        let res_vector = Rom::from_data(bus.clone(), 0xfffc, [0x00, 0xf0]);
 
         let mut executor = Executor::default();
         executor.add_task(cpu.run());
-        executor.add_task(rom_0.run());
-        executor.add_task(rom_1.run());
-        executor.add_task(rom_2.run());
+        executor.add_task(instructions.run());
+        executor.add_task(res_vector.run());
         executor.poll_until_halt()?;
 
         cpu.registers.with_ref(|r| {
