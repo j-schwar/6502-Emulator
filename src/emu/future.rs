@@ -43,6 +43,7 @@ pub fn wait_for_next_cycle() -> impl Future<Output = ()> {
 
 #[derive(Default)]
 pub struct Executor<'a> {
+    cycle_counter: u64,
     futures: Vec<Pin<Box<dyn Future<Output = emu::Result<()>> + 'a>>>,
 }
 
@@ -58,6 +59,8 @@ impl<'a> Executor<'a> {
 
     /// Polls all futures in this executor once.
     pub fn poll(&mut self) -> emu::Result<()> {
+        log::trace!(target: "cycle", "{}", self.cycle_counter);
+
         for future in self.futures.as_mut_slice() {
             let waker = noop_waker::noop_waker();
             let mut cx = Context::from_waker(&waker);
@@ -67,15 +70,7 @@ impl<'a> Executor<'a> {
             }
         }
 
-        Ok(())
-    }
-
-    /// Polls all futures `n` times.
-    pub fn poll_n(&mut self, n: u32) -> emu::Result<()> {
-        for _ in 0..n {
-            self.poll()?;
-        }
-
+        self.cycle_counter += 1;
         Ok(())
     }
 

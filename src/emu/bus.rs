@@ -7,6 +7,7 @@ use crate::emu::Ptr;
 pub enum BusDir {
     #[default]
     Read,
+    #[expect(unused)]
     Write,
 }
 
@@ -34,6 +35,7 @@ pub struct SharedBus(Rc<ScopedRefCell<Bus>>);
 
 impl SharedBus {
     /// Returns the value of the address bus.
+    #[expect(unused)]
     pub fn address(&self) -> Ptr {
         self.with_ref(|bus| bus.address)
     }
@@ -52,6 +54,7 @@ impl SharedBus {
     }
 
     /// Sets the value on the data bus.
+    #[expect(unused)]
     pub fn set_data(&self, value: u8) {
         self.with_mut_ref(|bus| bus.data = value);
     }

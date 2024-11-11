@@ -36,8 +36,8 @@ impl Ptr {
     }
 
     /// Wapping pointer arithmetic. Computes `self + rhs` wrapping on overflow.
-    pub fn wrapping_add(self, rhs: u16) -> Ptr {
-        self.0.wrapping_add(rhs).into()
+    pub const fn wrapping_add(self, rhs: u16) -> Ptr {
+        Ptr(self.0.wrapping_add(rhs))
     }
 }
 

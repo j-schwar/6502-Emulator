@@ -6,18 +6,21 @@ use crate::emu::{self, BusDir, EmulationError, Ptr, SharedBus};
 
 /// Models CPU state.
 #[derive(Clone, Copy, Debug, Default)]
-struct Registers {
+pub struct Registers {
     /// Program counter register.
     pub pc: u16,
     /// Accumulator register.
     pub ac: u8,
     /// General purpose X register.
+    #[expect(unused)]
     pub x: u8,
     /// General purpose Y register.
+    #[expect(unused)]
     pub y: u8,
     /// Status register.
     pub sr: u8,
     /// Stack pointer.
+    #[expect(unused)]
     pub sp: u8,
 }
 
@@ -39,21 +42,25 @@ impl Registers {
     }
 
     /// Sets the overflow (V) flag in the status register.
+    #[expect(unused)]
     fn set_overflow_flag(&mut self, value: bool) {
         set_bit!(self.sr, 0x40, value);
     }
 
     /// Sets the break flag (B) in the status register.
+    #[expect(unused)]
     fn set_break_flag(&mut self, value: bool) {
         set_bit!(self.sr, 0x10, value);
     }
 
     /// Sets the decimal flag (D) in the status register.
+    #[expect(unused)]
     fn set_decimal_flag(&mut self, value: bool) {
         set_bit!(self.sr, 0x08, value);
     }
 
     /// Sets the interrupt disable flag (I) in the status register.
+    #[expect(unused)]
     fn set_interrupt_flag(&mut self, value: bool) {
         set_bit!(self.sr, 0x04, value);
     }
@@ -64,6 +71,7 @@ impl Registers {
     }
 
     /// Sets the carry flag (C) in the status register.
+    #[expect(unused)]
     fn set_carry_flag(&mut self, value: bool) {
         set_bit!(self.sr, 0x01, value);
     }
@@ -123,17 +131,6 @@ impl Cpu {
         word |= self.read_u8(addr).await as u16;
         word |= (self.read_u8(addr.wrapping_add(1)).await as u16) << 8;
         word
-    }
-
-    /// Reads a single byte from the bus at the address pointed to by the program counter. After
-    /// which, the program counter is then incremented by 1.
-    ///
-    /// This operation takes a single clock cycle.
-    async fn read_and_adv_pc(&self) -> u8 {
-        let pc = self.registers.with_ref(|r| r.pc);
-        let value = self.read_u8(Ptr::from(pc)).await;
-        self.registers.with_mut_ref(|r| r.pc = r.pc.wrapping_add(1));
-        value
     }
 
     /// Invokes the processor's reset sequence.

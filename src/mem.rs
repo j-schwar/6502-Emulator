@@ -94,7 +94,7 @@ mod test {
     #[test]
     fn rom_sets_data_bus() {
         let bus = SharedBus::default();
-        let mut rom = Rom::from_data(bus.clone(), 0, vec![0, 1, 2, 3]);
+        let rom = Rom::from_data(bus.clone(), 0, vec![0, 1, 2, 3]);
 
         let mut executor = Executor::default();
         executor.add_task(rom.run());
