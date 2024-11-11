@@ -189,6 +189,16 @@ impl Cpu {
         data
     }
 
+    fn set_pc(&self, f: impl FnOnce(u16) -> u16) {
+        self.registers.with_mut_ref(|r| r.pc = f(r.pc));
+    }
+
+    fn load_pc_onto_bus(&self) {
+        self.registers.with_ref(|r| {
+            self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
+        });
+    }
+
     /// Fetches and executes a single instruction.
     ///
     /// Returns an [`EmulationError::InvalidInstruction`] error if an unknown instruction was
@@ -213,28 +223,122 @@ impl Cpu {
             };
         }
 
+        /// Expands to the execution steps for a 3-cycle zero-page addressing mode instruction.
+        macro_rules! zero_page_instr {
+            ($fmt:literal, $body:expr) => {
+                {
+                    // Cycle 1 - Fetch ADL, compute and load effective address onto bus.
+                    let adl = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+
+                    let effective_address = Ptr::from(adl as u16);
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 2 - Fetch data from effective address, load PC+2 onto bus.
+                    let data = self.bus.data();
+                    self.load_pc_onto_bus();
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, adl);
+                    self.end_cycle().await;
+
+                    // Next Cycle - Execute instruction.
+                    const BODY: fn(&mut Registers, u8) = $body;
+                    self.registers.with_mut_ref(|r| BODY(r, data));
+                }
+            };
+        }
+
+        /// Expands to the execution steps for a 4-cycle zero-page X addressing mode instruction.
+        macro_rules! zero_page_x_instr {
+            ($fmt:literal, $body:expr) => {
+                {
+                    // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
+                    let bal = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+                    let effective_address = Ptr::from(bal as u16);
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 2 - Load actual effective address onto bus.
+                    let effective_address: Ptr = self
+                        .registers
+                        .with_ref(|r| effective_address.raw().wrapping_add(r.x as u16) & 0x00ff)
+                        .into();
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 3 - Fetch data from effective address, load PC+2 onto bus.
+                    let data = self.bus.data();
+                    self.load_pc_onto_bus();
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, bal);
+                    self.end_cycle().await;
+
+                    // Next Cycle - Execute instruction.
+                    const BODY: fn(&mut Registers, u8) = $body;
+                    self.registers.with_mut_ref(|r| BODY(r, data));
+                }
+            };
+        }
+
+        /// Expands to the execution steps for a 4-cycle absolute addressing mode instruction.
+        macro_rules! absolute_instr {
+            ($fmt:literal, $body:expr) => {
+                {
+                    // Cycle 1 - Fetch low order effective address byte.
+                    let adl = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+                    self.load_pc_onto_bus();
+                    self.end_cycle().await;
+
+                    // Cycle 2 - Fetch high order effective address byte.
+                    let adh = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+                    let effective_address = Ptr::from(((adh as u16) << 8) | adl as u16);
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 3 - Fetch data from effective address, load PC+3 onto bus.
+                    let data = self.bus.data();
+                    self.load_pc_onto_bus();
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, effective_address.raw());
+                    self.end_cycle().await;
+
+                    // Next Cycle - Execute instruction.
+                    const BODY: fn(&mut Registers, u8) = $body;
+                    self.registers.with_mut_ref(|r| BODY(r, data));
+                }
+            };
+        }
+
         // Cycle 0 - Fetch opcode off of the data bus.
-        let opcode = self.read_and_inc_pc();
+        let opcode = self.bus.data();
+        self.set_pc(|pc| pc.wrapping_add(1));
+        self.load_pc_onto_bus();
         self.end_cycle().await;
 
         match opcode {
             // JAM
             0x02 => return Err(EmulationError::Halt),
 
-            // ORA #oper
-            0x09 => immediate_instr!("ORA #{:02x}", |r, imm| r.set_ac_with_flags(r.ac | imm)),
+            0x09 => immediate_instr!("ORA #${:02x}", |r, imm| r.set_ac_with_flags(r.ac | imm)),
 
-            // AND #oper
-            0x29 => immediate_instr!("AND #{:02x}", |r, imm| r.set_ac_with_flags(r.ac & imm)),
+            0x29 => immediate_instr!("AND #${:02x}", |r, imm| r.set_ac_with_flags(r.ac & imm)),
 
-            // LDY #oper
-            0xa0 => immediate_instr!("LDY #{:02x}", |r, imm| r.set_y_with_flags(imm)),
+            0xa0 => immediate_instr!("LDY #${:02x}", |r, imm| r.set_y_with_flags(imm)),
 
-            // LDX #oper
-            0xa2 => immediate_instr!("LDX #{:02x}", |r, imm| r.set_x_with_flags(imm)),
+            0xa2 => immediate_instr!("LDX #${:02x}", |r, imm| r.set_x_with_flags(imm)),
 
-            // LDA #oper
-            0xa9 => immediate_instr!("LDA #{:02x}", |r, imm| r.set_ac_with_flags(imm)),
+            0xa4 => zero_page_instr!("LDY ${:02x}", |r, data| r.set_y_with_flags(data)),
+
+            0xa5 => zero_page_instr!("LDA ${:02x}", |r, data| r.set_ac_with_flags(data)),
+
+            0xa6 => zero_page_instr!("LDX ${:02x}", |r, data| r.set_x_with_flags(data)),
+
+            0xa9 => immediate_instr!("LDA #${:02x}", |r, imm| r.set_ac_with_flags(imm)),
+
+            0xad => absolute_instr!("LDA ${:04x}", |r, data| r.set_ac_with_flags(data)),
+
+            0xb5 => zero_page_x_instr!("LDA ${:02x},X", |r, data| r.set_ac_with_flags(data)),
 
             // NOP
             0xea => {
@@ -286,11 +390,39 @@ mod test {
         Ok(cpu.registers.with_ref(|r| *r))
     }
 
+    fn exec_with_mem(
+        start_addr: u16,
+        mem: impl AsRef<[u8]>,
+        machine_code: impl AsRef<[u8]>,
+    ) -> emu::Result<Registers> {
+        let bus = SharedBus::default();
+        let cpu = Cpu::new(bus.clone());
+        let zero_page = Rom::from_data(bus.clone(), start_addr, mem.as_ref());
+        let rom = Rom::from_data(bus.clone(), 0xf000, machine_code.as_ref());
+        let res = ResetVector::new(bus.clone(), 0xf000);
+
+        let mut executor = Executor::default();
+        executor.add_task(cpu.run());
+        executor.add_task(zero_page.run());
+        executor.add_task(rom.run());
+        executor.add_task(res.run());
+        executor.poll_until_halt()?;
+
+        Ok(cpu.registers.with_ref(|r| *r))
+    }
+
+    fn exec_with_zero_page(
+        zero_page: impl AsRef<[u8]>,
+        machine_code: impl AsRef<[u8]>,
+    ) -> emu::Result<Registers> {
+        exec_with_mem(0x0000, zero_page, machine_code)
+    }
+
     #[test]
     fn lda_immediate() -> emu::Result<()> {
         init();
         let r = exec([
-            0xa9, 0x01, // LDA #01,
+            0xa9, 0x01, // LDA #$01
             0x02, // Halt
         ])?;
         assert_eq!(0x01, r.ac);
@@ -298,10 +430,81 @@ mod test {
     }
 
     #[test]
+    fn lda_zero_page() -> emu::Result<()> {
+        init();
+        let zp = [0x00, 0x00, 0x42, 0x00, 0x00, 0x00];
+
+        let r = exec_with_zero_page(
+            zp,
+            [
+                0xa5, 0x02, // LDA $02
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x42, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn lda_zero_page_x() -> emu::Result<()> {
+        init();
+        let zp = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
+
+        let r = exec_with_zero_page(
+            zp,
+            [
+                0xa2, 0x01, // LDX #$01
+                0xb5, 0x04, // LDA $04,X
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x05, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_page_x_overflow_behavior() -> emu::Result<()> {
+        init();
+        let zp = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
+
+        let r = exec_with_zero_page(
+            zp,
+            [
+                0xa2, 0x03, // LDX #$03
+                0xb5, 0xff, // LDA $ff,X
+                0x02, // Halt
+            ],
+        )?;
+
+        // Overflow behavior for zero-page X addressing mode should wrap around to the start of the
+        // zero page instead of going into the next page.
+        assert_eq!(0x02, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn lda_absolute() -> emu::Result<()> {
+        init();
+        let r = exec_with_mem(
+            0x2000,
+            [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
+            [
+                0xad, 0x03, 0x20, // LDA $2003
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x03, r.ac);
+        Ok(())
+    }
+
+    #[test]
     fn ldx_immediate() -> emu::Result<()> {
         init();
         let r = exec([
-            0xa2, 0x01, // LDX #01,
+            0xa2, 0x01, // LDX #$01
             0x02, // Halt
         ])?;
         assert_eq!(0x01, r.x);
@@ -309,10 +512,44 @@ mod test {
     }
 
     #[test]
+    fn ldx_zero_page() -> emu::Result<()> {
+        init();
+        let zp = [0x00, 0x00, 0x42, 0x00, 0x00, 0x00];
+
+        let r = exec_with_zero_page(
+            zp,
+            [
+                0xa6, 0x02, // LDX $02
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x42, r.x);
+        Ok(())
+    }
+
+    #[test]
+    fn ldy_zero_page() -> emu::Result<()> {
+        init();
+        let zp = [0x00, 0x00, 0x42, 0x00, 0x00, 0x00];
+
+        let r = exec_with_zero_page(
+            zp,
+            [
+                0xa4, 0x02, // LDY $02
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x42, r.y);
+        Ok(())
+    }
+
+    #[test]
     fn ldy_immediate() -> emu::Result<()> {
         init();
         let r = exec([
-            0xa0, 0x01, // LDY #01,
+            0xa0, 0x01, // LDY #$01,
             0x02, // Halt
         ])?;
         assert_eq!(0x01, r.y);
@@ -323,8 +560,8 @@ mod test {
     fn ora_immediate() -> emu::Result<()> {
         init();
         let r = exec([
-            0xa9, 0x01, // LDA #01,
-            0x09, 0x02, // ORA #02,
+            0xa9, 0x01, // LDA #$01,
+            0x09, 0x02, // ORA #$02,
             0x02, // Halt
         ])?;
         assert_eq!(0x03, r.ac);
@@ -335,8 +572,8 @@ mod test {
     fn and_immediate() -> emu::Result<()> {
         init();
         let r = exec([
-            0xa9, 0x0f, // LDA #0f,
-            0x29, 0x8a, // AND #8a,
+            0xa9, 0x0f, // LDA #$0f,
+            0x29, 0x8a, // AND #$8a,
             0x02, // Halt
         ])?;
         assert_eq!(0x0a, r.ac);
