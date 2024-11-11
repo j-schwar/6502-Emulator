@@ -154,6 +154,35 @@ impl Cpu {
         self.end_cycle().await;
     }
 
+    /// Reads from the data bus and increments the program counter.
+    ///
+    /// Specifically, this function does the following in order:
+    /// 1. Reads from the data bus.
+    /// 2. Increments the program counter register.
+    /// 3. Loads the program counter register onto the address bus.
+    ///
+    /// The address being read from is determine by whatever was on the address bus at the end of
+    /// the previous cycle.
+    fn read_and_inc_pc(&self) -> u8 {
+        let data = self.bus.data();
+        self.registers.with_mut_ref(|r| {
+            r.pc = r.pc.wrapping_add(1);
+            self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
+        });
+
+        data
+    }
+
+    /// Sets the accumulator register to the result of a given closure. Arithmetic flags (N, Z) are
+    /// set based on the new accumulator value.
+    fn set_ac_and_arithmetic_flags(&self, f: impl FnOnce(&Registers) -> u8) {
+        self.registers.with_mut_ref(|r| {
+            r.ac = f(r);
+            r.set_negative_flag(r.ac & 0x80 != 0);
+            r.set_zero_flag(r.ac == 0);
+        });
+    }
+
     /// Fetches and executes a single instruction.
     ///
     /// Returns an [`EmulationError::InvalidInstruction`] error if an unknown instruction was
@@ -163,14 +192,7 @@ impl Cpu {
         let instruction_addr = Ptr::from(self.registers.with_ref(|r| r.pc));
 
         // Cycle 0 - Fetch opcode off of the data bus.
-        //
-        // It's assumed, that PC is already on the address bus from the previous cycle. Before the
-        // next cycle, PC+1 is loaded onto the address bus.
-        let opcode = self.bus.data();
-        self.registers.with_mut_ref(|r| {
-            r.pc = r.pc.wrapping_add(1);
-            self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
-        });
+        let opcode = self.read_and_inc_pc();
         self.end_cycle().await;
 
         match opcode {
@@ -182,21 +204,12 @@ impl Cpu {
             // ORA #oper
             0x09 => {
                 // Cycle 1 - Fetch operand.
-                let data = self.bus.data();
-                self.registers.with_mut_ref(|r| {
-                    r.pc = r.pc.wrapping_add(1);
-                    self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
-                });
-
+                let data = self.read_and_inc_pc();
                 log::info!(target: "instr", "{} ORA #{:02x}", instruction_addr, data);
                 self.end_cycle().await;
 
-                // Next Cycle - Execution of instruction.
-                self.registers.with_mut_ref(|r| {
-                    r.ac |= data;
-                    r.set_negative_flag(r.ac & 0x80 != 0);
-                    r.set_zero_flag(r.ac == 0);
-                });
+                // Next Cycle - Execute instruction.
+                self.set_ac_and_arithmetic_flags(|r| r.ac | data);
             }
 
             // NOP
