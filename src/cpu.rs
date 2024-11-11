@@ -134,7 +134,7 @@ impl Cpu {
     ///
     /// This operation takes a single clock cycle.
     async fn read_u8(&self, addr: Ptr) -> u8 {
-        self.bus.set_address(addr, BusDir::Read);
+        self.bus.set_address(addr.raw(), BusDir::Read);
         self.end_cycle().await;
         self.bus.data()
     }
@@ -164,7 +164,7 @@ impl Cpu {
         // Load reset vector into program counter.
         let addr = self.read_u16(Ptr::RES).await;
         self.registers.with_mut_ref(|r| r.pc = addr);
-        self.bus.set_address(Ptr::from(addr), BusDir::Read);
+        self.bus.set_address(addr, BusDir::Read);
 
         log::debug!(target: "cpu", "reset complete - pc = {}", Ptr::from(addr));
         self.end_cycle().await;
@@ -183,7 +183,7 @@ impl Cpu {
         let data = self.bus.data();
         self.registers.with_mut_ref(|r| {
             r.pc = r.pc.wrapping_add(1);
-            self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
+            self.bus.set_address(r.pc, BusDir::Read);
         });
 
         data
@@ -195,7 +195,7 @@ impl Cpu {
 
     fn load_pc_onto_bus(&self) {
         self.registers.with_ref(|r| {
-            self.bus.set_address(Ptr::from(r.pc), BusDir::Read);
+            self.bus.set_address(r.pc, BusDir::Read);
         });
     }
 
@@ -231,7 +231,7 @@ impl Cpu {
                     let adl = self.bus.data();
                     self.set_pc(|pc| pc.wrapping_add(1));
 
-                    let effective_address = Ptr::from(adl as u16);
+                    let effective_address = adl as u16;
                     self.bus.set_address(effective_address, BusDir::Read);
                     self.end_cycle().await;
 
@@ -255,15 +255,14 @@ impl Cpu {
                     // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
                     let bal = self.bus.data();
                     self.set_pc(|pc| pc.wrapping_add(1));
-                    let effective_address = Ptr::from(bal as u16);
+                    let effective_address = bal as u16;
                     self.bus.set_address(effective_address, BusDir::Read);
                     self.end_cycle().await;
 
                     // Cycle 2 - Load actual effective address onto bus.
-                    let effective_address: Ptr = self
+                    let effective_address = self
                         .registers
-                        .with_ref(|r| effective_address.raw().wrapping_add(r.x as u16) & 0x00ff)
-                        .into();
+                        .with_ref(|r| effective_address.wrapping_add(r.x as u16) & 0x00ff);
                     self.bus.set_address(effective_address, BusDir::Read);
                     self.end_cycle().await;
 
@@ -293,14 +292,14 @@ impl Cpu {
                     // Cycle 2 - Fetch high order effective address byte.
                     let adh = self.bus.data();
                     self.set_pc(|pc| pc.wrapping_add(1));
-                    let effective_address = Ptr::from(((adh as u16) << 8) | adl as u16);
+                    let effective_address = ((adh as u16) << 8) | adl as u16;
                     self.bus.set_address(effective_address, BusDir::Read);
                     self.end_cycle().await;
 
                     // Cycle 3 - Fetch data from effective address, load PC+3 onto bus.
                     let data = self.bus.data();
                     self.load_pc_onto_bus();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, effective_address.raw());
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, effective_address);
                     self.end_cycle().await;
 
                     // Next Cycle - Execute instruction.

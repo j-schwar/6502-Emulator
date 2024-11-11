@@ -1,8 +1,6 @@
 use std::{fmt::Display, rc::Rc};
 use with_ref::{ScopedRefCell, WithRef};
 
-use crate::emu::Ptr;
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum BusDir {
     #[default]
@@ -23,7 +21,7 @@ impl Display for BusDir {
 #[derive(Default, Clone)]
 pub struct Bus {
     pub data: u8,
-    pub address: Ptr,
+    pub address: u16,
     pub dir: BusDir,
 }
 
@@ -36,12 +34,12 @@ pub struct SharedBus(Rc<ScopedRefCell<Bus>>);
 impl SharedBus {
     /// Returns the value of the address bus.
     #[expect(unused)]
-    pub fn address(&self) -> Ptr {
+    pub fn address(&self) -> u16 {
         self.with_ref(|bus| bus.address)
     }
 
     /// Sets the value on the address bus along with the direction.
-    pub fn set_address(&self, ptr: Ptr, dir: BusDir) {
+    pub fn set_address(&self, ptr: u16, dir: BusDir) {
         self.with_mut_ref(|bus| {
             bus.address = ptr;
             bus.dir = dir;

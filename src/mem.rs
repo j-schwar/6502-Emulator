@@ -2,8 +2,6 @@
 
 use with_ref::WithRef;
 
-use crate::emu::Ptr;
-
 use super::emu::{self, BusDir, Result, SharedBus};
 
 /// Read-only memory component which listens on the bus in the 2-byte reset vector location.
@@ -25,16 +23,13 @@ impl ResetVector {
 
     /// Main loop for this component.
     pub async fn run(&self) -> emu::Result<()> {
-        const RES_LOW: Ptr = Ptr::RES;
-        const RES_HIGH: Ptr = Ptr::RES.wrapping_add(1);
-
         loop {
             self.bus.with_mut_ref(|bus| match bus.address {
-                RES_LOW => {
+                0xfffc => {
                     bus.data = (self.vector & 0x00ff) as u8;
                     log::debug!(target: "reset_vector", "{} R {:02x}", bus.address, bus.data);
                 }
-                RES_HIGH => {
+                0xfffd => {
                     bus.data = (self.vector >> 8) as u8;
                     log::debug!(target: "reset_vector", "{} R {:02x}", bus.address, bus.data);
                 }
@@ -66,7 +61,7 @@ impl Rom {
     fn cycle(&self) {
         self.bus.with_mut_ref(|bus| {
             if bus.dir == BusDir::Read {
-                let addr = bus.address.raw() as usize;
+                let addr = bus.address as usize;
                 if addr >= self.start_addr && addr < (self.start_addr + self.memory.len()) {
                     let index = addr - self.start_addr;
                     let value = self.memory[index];
@@ -99,15 +94,15 @@ mod test {
         let mut executor = Executor::default();
         executor.add_task(rom.run());
 
-        bus.set_address(Ptr::from(0x0001), BusDir::Read);
+        bus.set_address(0x0001, BusDir::Read);
         executor.poll().unwrap();
         assert_eq!(1, bus.data());
 
-        bus.set_address(Ptr::from(0x0002), BusDir::Read);
+        bus.set_address(0x0002, BusDir::Read);
         executor.poll().unwrap();
         assert_eq!(2, bus.data());
 
-        bus.set_address(Ptr::from(0x0003), BusDir::Read);
+        bus.set_address(0x0003, BusDir::Read);
         executor.poll().unwrap();
         assert_eq!(3, bus.data());
     }
