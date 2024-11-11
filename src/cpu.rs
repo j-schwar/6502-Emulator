@@ -12,10 +12,8 @@ pub struct Registers {
     /// Accumulator register.
     pub ac: u8,
     /// General purpose X register.
-    #[expect(unused)]
     pub x: u8,
     /// General purpose Y register.
-    #[expect(unused)]
     pub y: u8,
     /// Status register.
     pub sr: u8,
@@ -74,6 +72,24 @@ impl Registers {
     #[expect(unused)]
     fn set_carry_flag(&mut self, value: bool) {
         set_bit!(self.sr, 0x01, value);
+    }
+
+    fn set_ac_with_flags(&mut self, value: u8) {
+        self.ac = value;
+        self.set_negative_flag(self.ac & 0x80 != 0);
+        self.set_zero_flag(self.ac == 0);
+    }
+
+    fn set_x_with_flags(&mut self, value: u8) {
+        self.x = value;
+        self.set_negative_flag(self.x & 0x80 != 0);
+        self.set_zero_flag(self.x == 0);
+    }
+
+    fn set_y_with_flags(&mut self, value: u8) {
+        self.y = value;
+        self.set_negative_flag(self.y & 0x80 != 0);
+        self.set_zero_flag(self.y == 0);
     }
 }
 
@@ -173,16 +189,6 @@ impl Cpu {
         data
     }
 
-    /// Sets the accumulator register to the result of a given closure. Arithmetic flags (N, Z) are
-    /// set based on the new accumulator value.
-    fn set_ac_and_arithmetic_flags(&self, f: impl FnOnce(&Registers) -> u8) {
-        self.registers.with_mut_ref(|r| {
-            r.ac = f(r);
-            r.set_negative_flag(r.ac & 0x80 != 0);
-            r.set_zero_flag(r.ac == 0);
-        });
-    }
-
     /// Fetches and executes a single instruction.
     ///
     /// Returns an [`EmulationError::InvalidInstruction`] error if an unknown instruction was
@@ -191,26 +197,44 @@ impl Cpu {
     async fn fetch_and_execute(&self) -> emu::Result<()> {
         let instruction_addr = Ptr::from(self.registers.with_ref(|r| r.pc));
 
+        /// Expands to the execution steps for a 2-cycle immediate addressing mode instruction.
+        macro_rules! immediate_instr {
+            ($fmt:literal, $body:expr) => {
+                {
+                    // Cycle 1 - Fetch operand.
+                    let data = self.read_and_inc_pc();
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, data);
+                    self.end_cycle().await;
+
+                    // Next Cycle - Execute instruction.
+                    const BODY: fn(&mut Registers, u8) = $body;
+                    self.registers.with_mut_ref(|r| BODY(r, data));
+                }
+            };
+        }
+
         // Cycle 0 - Fetch opcode off of the data bus.
         let opcode = self.read_and_inc_pc();
         self.end_cycle().await;
 
         match opcode {
             // JAM
-            0x02 => {
-                return Err(EmulationError::Halt);
-            }
+            0x02 => return Err(EmulationError::Halt),
 
             // ORA #oper
-            0x09 => {
-                // Cycle 1 - Fetch operand.
-                let data = self.read_and_inc_pc();
-                log::info!(target: "instr", "{} ORA #{:02x}", instruction_addr, data);
-                self.end_cycle().await;
+            0x09 => immediate_instr!("ORA #{:02x}", |r, imm| r.set_ac_with_flags(r.ac | imm)),
 
-                // Next Cycle - Execute instruction.
-                self.set_ac_and_arithmetic_flags(|r| r.ac | data);
-            }
+            // AND #oper
+            0x29 => immediate_instr!("AND #{:02x}", |r, imm| r.set_ac_with_flags(r.ac & imm)),
+
+            // LDY #oper
+            0xa0 => immediate_instr!("LDY #{:02x}", |r, imm| r.set_y_with_flags(imm)),
+
+            // LDX #oper
+            0xa2 => immediate_instr!("LDX #{:02x}", |r, imm| r.set_x_with_flags(imm)),
+
+            // LDA #oper
+            0xa9 => immediate_instr!("LDA #{:02x}", |r, imm| r.set_ac_with_flags(imm)),
 
             // NOP
             0xea => {
@@ -263,14 +287,59 @@ mod test {
     }
 
     #[test]
+    fn lda_immediate() -> emu::Result<()> {
+        init();
+        let r = exec([
+            0xa9, 0x01, // LDA #01,
+            0x02, // Halt
+        ])?;
+        assert_eq!(0x01, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn ldx_immediate() -> emu::Result<()> {
+        init();
+        let r = exec([
+            0xa2, 0x01, // LDX #01,
+            0x02, // Halt
+        ])?;
+        assert_eq!(0x01, r.x);
+        Ok(())
+    }
+
+    #[test]
+    fn ldy_immediate() -> emu::Result<()> {
+        init();
+        let r = exec([
+            0xa0, 0x01, // LDY #01,
+            0x02, // Halt
+        ])?;
+        assert_eq!(0x01, r.y);
+        Ok(())
+    }
+
+    #[test]
     fn ora_immediate() -> emu::Result<()> {
         init();
         let r = exec([
-            0x09, 0x01, // ORA #01,
+            0xa9, 0x01, // LDA #01,
             0x09, 0x02, // ORA #02,
             0x02, // Halt
         ])?;
         assert_eq!(0x03, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn and_immediate() -> emu::Result<()> {
+        init();
+        let r = exec([
+            0xa9, 0x0f, // LDA #0f,
+            0x29, 0x8a, // AND #8a,
+            0x02, // Halt
+        ])?;
+        assert_eq!(0x0a, r.ac);
         Ok(())
     }
 }
