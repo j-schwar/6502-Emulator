@@ -69,7 +69,6 @@ impl Registers {
     }
 
     /// Sets the carry flag (C) in the status register.
-    #[expect(unused)]
     fn set_carry_flag(&mut self, value: bool) {
         set_bit!(self.sr, 0x01, value);
     }
@@ -202,8 +201,10 @@ impl Cpu {
     /// Fetches and executes a single instruction.
     ///
     /// Returns an [`EmulationError::InvalidInstruction`] error if an unknown instruction was
-    /// encountered. Lovely reference documentation can be found at
-    /// https://www.masswerk.at/6502/6502_instruction_set.html
+    /// encountered.
+    ///
+    /// Reference for instructions: https://www.masswerk.at/6502/6502_instruction_set.html
+    /// Reference for cycle timings: https://web.archive.org/web/20120227142944if_/http://archive.6502.org:80/datasheets/synertek_hardware_manual.pdf
     async fn fetch_and_execute(&self) -> emu::Result<()> {
         let instruction_addr = Ptr::from(self.registers.with_ref(|r| r.pc));
 
@@ -309,6 +310,146 @@ impl Cpu {
             };
         }
 
+        /// Expands to the execution steps for a 4 or 5-cycle absolute with offset addressing mode
+        /// instruction. In addition to the format string and expression body, the offset register
+        /// must also be supplied to this macro.
+        macro_rules! absolute_offset_instr {
+            ($fmt:literal, $reg:ident, $body:expr) => {
+                {
+                    // Cycle 1 - Fetch low order effective address byte.
+                    let adl = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+                    self.load_pc_onto_bus();
+                    self.end_cycle().await;
+
+                    // Cycle 2 - Fetch high order effective address byte.
+                    let adh = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+                    let (adl, carry) = self.registers.with_mut_ref(|r| {
+                        let (value, carry) = adl.overflowing_add(r.$reg);
+                        r.set_carry_flag(carry);
+                        (value, carry)
+                    });
+                    let effective_address = ((adh as u16) << 8) | adl as u16;
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 3 - Fetch data or recompute effective address depending on if page boundary
+                    // was crossed (i.e., the carry bit was set via the previous computation).
+                    let data = if !carry {
+                        self.bus.data()
+                    } else {
+                        let effective_address = ((adh.wrapping_add(1) as u16) << 8) | adl as u16;
+                        self.bus.set_address(effective_address, BusDir::Read);
+                        self.end_cycle().await;
+
+                        // Cycle 4 - Fetch data.
+                        self.bus.data()
+                    };
+                    self.load_pc_onto_bus();
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, effective_address);
+                    self.end_cycle().await;
+
+                    // Next Cycle - Execute instruction.
+                    const BODY: fn(&mut Registers, u8) = $body;
+                    self.registers.with_mut_ref(|r| BODY(r, data));
+                }
+            };
+        }
+
+        /// Expands to the execution steps for a 6-cycle indirect X addressing mode instruction.
+        macro_rules! indirect_x_instr {
+            ($fmt:literal, $body:expr) => {
+                {
+                    // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
+                    let bal = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+                    let effective_address = bal as u16;
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 2 - Load actual effective address onto bus.
+                    let x = self.registers.with_ref(|r| r.x);
+                    let effective_address = bal.wrapping_add(x) as u16;
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 3 - Fetch low order byte of indirect address.
+                    let adl = self.bus.data();
+                    let effective_address = bal.wrapping_add(x).wrapping_add(1) as u16;
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 4 - Fetch high order byte of indirect address.
+                    let adh = self.bus.data();
+                    let indirect_address = u16::from_le_bytes([adl, adh]);
+                    self.bus.set_address(indirect_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 5 - Fetch data.
+                    let data = self.bus.data();
+                    self.load_pc_onto_bus();
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, bal);
+                    self.end_cycle().await;
+
+                    // Next Cycle - Execute instruction.
+                    const BODY: fn(&mut Registers, u8) = $body;
+                    self.registers.with_mut_ref(|r| BODY(r, data));
+                }
+            };
+        }
+
+        /// Expands to the execution steps for a 5 or 6-cycle indirect Y addressing mode instruction.
+        macro_rules! indirect_y_instr {
+            ($fmt:literal, $body:expr) => {
+                {
+                    // Cycle 1 - Fetch zero page indirect address.
+                    let ial = self.bus.data();
+                    self.set_pc(|pc| pc.wrapping_add(1));
+                    let indirect_address = ial as u16;
+                    self.bus.set_address(indirect_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 2 - Fetch low order byte of base address.
+                    let bal = self.bus.data();
+                    let indirect_address = ial.wrapping_add(1) as u16;
+                    self.bus.set_address(indirect_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 3 - Fetch high order byte of base address.
+                    let bah = self.bus.data();
+                    let (adl, carry) = self.registers.with_mut_ref(|r| {
+                        let (value, carry) = bal.overflowing_add(r.y);
+                        r.set_carry_flag(carry);
+                        (value, carry)
+                    });
+                    let effective_address = u16::from_le_bytes([adl, bah]);
+                    self.bus.set_address(effective_address, BusDir::Read);
+                    self.end_cycle().await;
+
+                    // Cycle 4 - Fetch data or recompute address if carry flag is set.
+                    let data = if !carry {
+                        self.bus.data()
+                    } else {
+                        let adh = bah.wrapping_add(1);
+                        let effective_address = u16::from_le_bytes([adl, adh]);
+                        self.bus.set_address(effective_address, BusDir::Read);
+                        self.end_cycle().await;
+
+                        // Cycle 5 - Fetch data.
+                        self.bus.data()
+                    };
+                    self.load_pc_onto_bus();
+                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, ial);
+                    self.end_cycle().await;
+
+                    // Next Cycle - Execute instruction.
+                    const BODY: fn(&mut Registers, u8) = $body;
+                    self.registers.with_mut_ref(|r| BODY(r, data));
+                }
+            };
+        }
+
         // Cycle 0 - Fetch opcode off of the data bus.
         let opcode = self.bus.data();
         self.set_pc(|pc| pc.wrapping_add(1));
@@ -325,6 +466,8 @@ impl Cpu {
 
             0xa0 => immediate_instr!("LDY #${:02x}", |r, imm| r.set_y_with_flags(imm)),
 
+            0xa1 => indirect_x_instr!("LDA (${:02x},X)", |r, data| r.set_ac_with_flags(data)),
+
             0xa2 => immediate_instr!("LDX #${:02x}", |r, imm| r.set_x_with_flags(imm)),
 
             0xa4 => zero_page_instr!("LDY ${:02x}", |r, data| r.set_y_with_flags(data)),
@@ -337,7 +480,13 @@ impl Cpu {
 
             0xad => absolute_instr!("LDA ${:04x}", |r, data| r.set_ac_with_flags(data)),
 
+            0xb1 => indirect_y_instr!("LDA (${:02x}),Y", |r, data| r.set_ac_with_flags(data)),
+
             0xb5 => zero_page_x_instr!("LDA ${:02x},X", |r, data| r.set_ac_with_flags(data)),
+
+            0xb9 => absolute_offset_instr!("LDA ${:04x},Y", y, |r, data| r.set_ac_with_flags(data)),
+
+            0xbd => absolute_offset_instr!("LDA ${:04x},X", x, |r, data| r.set_ac_with_flags(data)),
 
             // NOP
             0xea => {
@@ -389,20 +538,26 @@ mod test {
         Ok(cpu.registers.with_ref(|r| *r))
     }
 
-    fn exec_with_mem(
+    /// Executes given machine code until the CPU halts, where it then returns the state of the CPU
+    /// registers. An additional chunk of memory with a specified state location along with the
+    /// zero-page is also provided to the emulator.
+    fn exec_with_zero_page_and_mem(
+        zero_page: impl AsRef<[u8]>,
         start_addr: u16,
         mem: impl AsRef<[u8]>,
         machine_code: impl AsRef<[u8]>,
     ) -> emu::Result<Registers> {
         let bus = SharedBus::default();
         let cpu = Cpu::new(bus.clone());
-        let zero_page = Rom::from_data(bus.clone(), start_addr, mem.as_ref());
+        let zero_page = Rom::from_data(bus.clone(), 0x0000, zero_page.as_ref());
+        let mem = Rom::from_data(bus.clone(), start_addr, mem.as_ref());
         let rom = Rom::from_data(bus.clone(), 0xf000, machine_code.as_ref());
         let res = ResetVector::new(bus.clone(), 0xf000);
 
         let mut executor = Executor::default();
         executor.add_task(cpu.run());
         executor.add_task(zero_page.run());
+        executor.add_task(mem.run());
         executor.add_task(rom.run());
         executor.add_task(res.run());
         executor.poll_until_halt()?;
@@ -410,6 +565,32 @@ mod test {
         Ok(cpu.registers.with_ref(|r| *r))
     }
 
+    /// Executes given machine code until the CPU halts, where it then returns the state of the CPU
+    /// registers. An additional chunk of memory with a specified state location is also provided to
+    /// the emulator.
+    fn exec_with_mem(
+        start_addr: u16,
+        mem: impl AsRef<[u8]>,
+        machine_code: impl AsRef<[u8]>,
+    ) -> emu::Result<Registers> {
+        let bus = SharedBus::default();
+        let cpu = Cpu::new(bus.clone());
+        let mem = Rom::from_data(bus.clone(), start_addr, mem.as_ref());
+        let rom = Rom::from_data(bus.clone(), 0xf000, machine_code.as_ref());
+        let res = ResetVector::new(bus.clone(), 0xf000);
+
+        let mut executor = Executor::default();
+        executor.add_task(cpu.run());
+        executor.add_task(mem.run());
+        executor.add_task(rom.run());
+        executor.add_task(res.run());
+        executor.poll_until_halt()?;
+
+        Ok(cpu.registers.with_ref(|r| *r))
+    }
+
+    /// Executes given machine code until the CPU halts, where it then returns the state of the CPU
+    /// registers. The zero-page chunk of memory is also provided to the emulator.
     fn exec_with_zero_page(
         zero_page: impl AsRef<[u8]>,
         machine_code: impl AsRef<[u8]>,
@@ -496,6 +677,121 @@ mod test {
         )?;
 
         assert_eq!(0x03, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn lda_absolute_offset_x() -> emu::Result<()> {
+        init();
+        let r = exec_with_mem(
+            0x2000,
+            [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
+            [
+                0xa2, 0x03, // LDX #$03
+                0xbd, 0x00, 0x20, // LDA $2000,X
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x03, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn lda_absolute_offset_y() -> emu::Result<()> {
+        init();
+        let r = exec_with_mem(
+            0x2000,
+            [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
+            [
+                0xa0, 0x03, // LDY #$03
+                0xb9, 0x00, 0x20, // LDA $2000,Y
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x03, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn lda_indirect_x() -> emu::Result<()> {
+        init();
+
+        let r = exec_with_zero_page_and_mem(
+            [
+                0x02, 0x20, // $0000
+                0x03, 0x20, // $0002
+                0x04, 0x20, // $0004
+            ],
+            0x2000,
+            [
+                0xde, 0xae, // $2000
+                0xdb, 0xea, // $2002
+                0x42, 0xff, // $2004
+            ],
+            [
+                0xa2, 0x02, // LDX #$02
+                0xa1, 0x02, // LDA ($02,X)
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x42, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn lda_indirect_y() -> emu::Result<()> {
+        init();
+
+        let r = exec_with_zero_page_and_mem(
+            [
+                0x02, 0x20, // $0000
+                0x03, 0x20, // $0002
+                0x04, 0x20, // $0004
+            ],
+            0x2000,
+            [
+                0xde, 0xae, // $2000
+                0xdb, 0xea, // $2002
+                0x42, 0xff, // $2004
+            ],
+            [
+                0xa0, 0x01, // LDY #$01
+                0xb1, 0x02, // LDA ($02),Y
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x42, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn lda_indirect_y_with_page_overflow() -> emu::Result<()> {
+        init();
+
+        let r = exec_with_zero_page_and_mem(
+            [
+                0x02, 0x20, // $0000
+                0xf4, 0x1f, // $0002
+                0x04, 0x20, // $0004
+            ],
+            0x2000,
+            [
+                0xde, 0xae, // $2000
+                0xdb, 0xea, // $2002
+                0x42, 0xff, // $2004
+            ],
+            [
+                0xa0, 0x10, // LDY #$10
+                0xb1, 0x02, // LDA ($02),Y
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x42, r.ac);
         Ok(())
     }
 

@@ -27,11 +27,11 @@ impl ResetVector {
             self.bus.with_mut_ref(|bus| match bus.address {
                 0xfffc => {
                     bus.data = (self.vector & 0x00ff) as u8;
-                    log::debug!(target: "reset_vector", "{} R {:02x}", bus.address, bus.data);
+                    log::debug!(target: "reset_vector", "{:#06x} R {:02x}", bus.address, bus.data);
                 }
                 0xfffd => {
                     bus.data = (self.vector >> 8) as u8;
-                    log::debug!(target: "reset_vector", "{} R {:02x}", bus.address, bus.data);
+                    log::debug!(target: "reset_vector", "{:#06x} R {:02x}", bus.address, bus.data);
                 }
                 _ => {}
             });
@@ -67,7 +67,7 @@ impl Rom {
                     let value = self.memory[index];
                     bus.data = value;
 
-                    log::debug!(target: "rom", "{} R {:02x}", bus.address, value);
+                    log::debug!(target: "rom", "{:#06x} R {:02x}", bus.address, value);
                 }
             }
         });
