@@ -250,8 +250,10 @@ impl Cpu {
         }
 
         /// Expands to the execution steps for a 4-cycle zero-page X addressing mode instruction.
-        macro_rules! zero_page_x_instr {
-            ($fmt:literal, $body:expr) => {
+        /// In addition to the format string and expression body, the offset register must also be
+        /// supplied to this macro.
+        macro_rules! zero_page_offset_instr {
+            ($fmt:literal, $reg:ident, $body:expr) => {
                 {
                     // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
                     let bal = self.bus.data();
@@ -263,7 +265,7 @@ impl Cpu {
                     // Cycle 2 - Load actual effective address onto bus.
                     let effective_address = self
                         .registers
-                        .with_ref(|r| effective_address.wrapping_add(r.x as u16) & 0x00ff);
+                        .with_ref(|r| effective_address.wrapping_add(r.$reg as u16) & 0x00ff);
                     self.bus.set_address(effective_address, BusDir::Read);
                     self.end_cycle().await;
 
@@ -478,15 +480,29 @@ impl Cpu {
 
             0xa9 => immediate_instr!("LDA #${:02x}", |r, imm| r.set_ac_with_flags(imm)),
 
+            0xac => absolute_instr!("LDY ${:04x}", |r, data| r.set_y_with_flags(data)),
+
             0xad => absolute_instr!("LDA ${:04x}", |r, data| r.set_ac_with_flags(data)),
+
+            0xae => absolute_instr!("LDX ${:04x}", |r, data| r.set_x_with_flags(data)),
 
             0xb1 => indirect_y_instr!("LDA (${:02x}),Y", |r, data| r.set_ac_with_flags(data)),
 
-            0xb5 => zero_page_x_instr!("LDA ${:02x},X", |r, data| r.set_ac_with_flags(data)),
+            0xb4 => zero_page_offset_instr!("LDY ${:02},X", x, |r, data| r.set_y_with_flags(data)),
+
+            0xb5 => {
+                zero_page_offset_instr!("LDA ${:02x},X", x, |r, data| r.set_ac_with_flags(data))
+            }
+
+            0xb6 => zero_page_offset_instr!("LDX ${:02x},Y", y, |r, data| r.set_x_with_flags(data)),
 
             0xb9 => absolute_offset_instr!("LDA ${:04x},Y", y, |r, data| r.set_ac_with_flags(data)),
 
+            0xbc => absolute_offset_instr!("LDY ${:04x},X", x, |r, data| r.set_y_with_flags(data)),
+
             0xbd => absolute_offset_instr!("LDA ${:04x},X", x, |r, data| r.set_ac_with_flags(data)),
+
+            0xbe => absolute_offset_instr!("LDX ${:04x},Y", y, |r, data| r.set_x_with_flags(data)),
 
             // NOP
             0xea => {
@@ -665,18 +681,22 @@ mod test {
     }
 
     #[test]
-    fn lda_absolute() -> emu::Result<()> {
+    fn lda_ldx_ldy_absolute() -> emu::Result<()> {
         init();
         let r = exec_with_mem(
             0x2000,
             [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
             [
+                0xac, 0x02, 0x20, // LDY $2002
                 0xad, 0x03, 0x20, // LDA $2003
+                0xae, 0x04, 0x20, // LDX $2004
                 0x02, // Halt
             ],
         )?;
 
+        assert_eq!(0x02, r.y);
         assert_eq!(0x03, r.ac);
+        assert_eq!(0x04, r.x);
         Ok(())
     }
 
@@ -848,6 +868,88 @@ mod test {
             0x02, // Halt
         ])?;
         assert_eq!(0x01, r.y);
+        Ok(())
+    }
+
+    #[test]
+    fn ldx_zero_page_y() -> emu::Result<()> {
+        init();
+        let r = exec_with_zero_page(
+            [
+                0x00, 0x01, // $0000
+                0x02, 0x03, // $0002
+                0x04, 0x05, // $0004
+            ],
+            [
+                0xa0, 0x01, // LDY #$01
+                0xb6, 0x04, // LDX $04,Y
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x05, r.x);
+        Ok(())
+    }
+
+    #[test]
+    fn ldy_zero_page_x() -> emu::Result<()> {
+        init();
+        let r = exec_with_zero_page(
+            [
+                0x00, 0x01, // $0000
+                0x02, 0x03, // $0002
+                0x04, 0x05, // $0004
+            ],
+            [
+                0xa2, 0x01, // LDX #$01
+                0xb4, 0x04, // LDY $04,X
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x05, r.y);
+        Ok(())
+    }
+
+    #[test]
+    fn ldx_absolute_y() -> emu::Result<()> {
+        init();
+        let r = exec_with_mem(
+            0x2000,
+            [
+                0x00, 0x01, // $2000
+                0x02, 0x03, // $2002
+                0x04, 0x05, // $2004
+            ],
+            [
+                0xa0, 0x01, // LDY #$01
+                0xbe, 0x04, 0x20, // LDX $2004,Y
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x05, r.x);
+        Ok(())
+    }
+
+    #[test]
+    fn ldy_absolute_x() -> emu::Result<()> {
+        init();
+        let r = exec_with_mem(
+            0x2000,
+            [
+                0x00, 0x01, // $2000
+                0x02, 0x03, // $2002
+                0x04, 0x05, // $2004
+            ],
+            [
+                0xa2, 0x01, // LDX #$01
+                0xbc, 0x04, 0x20, // LDY $2004,X
+                0x02, // Halt
+            ],
+        )?;
+
+        assert_eq!(0x05, r.y);
         Ok(())
     }
 
