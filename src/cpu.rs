@@ -92,6 +92,54 @@ impl Registers {
     }
 }
 
+struct ExecCtx<'a> {
+    address: u16,
+    cpu: &'a Cpu,
+}
+
+impl<'a> ExecCtx<'a> {
+    /// Executes an Internal Execution on Memory (IEM) instruction with immediate addressing.
+    ///
+    /// The total duration of instructions of this type is 2 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    /// As with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_immediate(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        // Cycle 1 - Fetch operand.
+        let data = self.cpu.read_and_inc_pc();
+        log::info!(target: "instr", "{:#06x} {} #${}", self.address, mnemonic, data);
+        self.cpu.end_cycle().await;
+
+        // Next Cycle - Execute instruction.
+        self.cpu.registers.with_mut_ref(|r| body(r, data));
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with zero-page addressing.
+    ///
+    /// The total duration of instructions of this type is 3 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    /// As with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_zero_page(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        // Cycle 1 - Fetch ADL, compute and load effective address onto bus.
+        let adl = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+
+        let effective_address = adl as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch data from effective address, load PC+2 onto bus.
+        let data = self.cpu.bus.data();
+        self.cpu.load_pc_onto_bus();
+        log::info!(target: "instr", "{:#06x} {} ${:02x}", self.address, mnemonic, adl);
+        self.cpu.end_cycle().await;
+
+        // Next Cycle - Execute instruction.
+        self.cpu.registers.with_mut_ref(|r| body(r, data));
+    }
+}
+
 pub struct Cpu {
     bus: SharedBus,
     pub registers: ScopedRefCell<Registers>,
@@ -106,27 +154,15 @@ impl Cpu {
         }
     }
 
+    fn new_ctx(&self, address: u16) -> ExecCtx<'_> {
+        ExecCtx { address, cpu: self }
+    }
+
     /// Signals the end of the CPU cycle.
     ///
     /// Along with calling [`core::wait_for_next_cycle`], this function performs additional logging
     /// of the bus and register state for debugging.
     async fn end_cycle(&self) {
-        // self.registers.with_ref(|r| {
-        //     log::trace!(
-        //         target: "reg",
-        //         "PC: {:04x}, A: {:02x}, X: {:02x}, Y: {:02x}, SR: {:02x}, SP: {:02x}",
-        //         r.pc,
-        //         r.ac,
-        //         r.x,
-        //         r.y,
-        //         r.sr,
-        //         r.sp,
-        //     );
-        // });
-
-        // self.bus.with_ref(
-        //     |bus| log::trace!(target: "bus", "{} {} {:02x}", bus.address, bus.dir, bus.data),
-        // );
         emu::wait_for_next_cycle().await;
     }
     /// Reads a single byte from the bus at a given address.
@@ -206,48 +242,8 @@ impl Cpu {
     /// Reference for instructions: https://www.masswerk.at/6502/6502_instruction_set.html
     /// Reference for cycle timings: https://web.archive.org/web/20120227142944if_/http://archive.6502.org:80/datasheets/synertek_hardware_manual.pdf
     async fn fetch_and_execute(&self) -> emu::Result<()> {
-        let instruction_addr = Ptr::from(self.registers.with_ref(|r| r.pc));
-
-        /// Expands to the execution steps for a 2-cycle immediate addressing mode instruction.
-        macro_rules! immediate_instr {
-            ($fmt:literal, $body:expr) => {
-                {
-                    // Cycle 1 - Fetch operand.
-                    let data = self.read_and_inc_pc();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, data);
-                    self.end_cycle().await;
-
-                    // Next Cycle - Execute instruction.
-                    const BODY: fn(&mut Registers, u8) = $body;
-                    self.registers.with_mut_ref(|r| BODY(r, data));
-                }
-            };
-        }
-
-        /// Expands to the execution steps for a 3-cycle zero-page addressing mode instruction.
-        macro_rules! zero_page_instr {
-            ($fmt:literal, $body:expr) => {
-                {
-                    // Cycle 1 - Fetch ADL, compute and load effective address onto bus.
-                    let adl = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-
-                    let effective_address = adl as u16;
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 2 - Fetch data from effective address, load PC+2 onto bus.
-                    let data = self.bus.data();
-                    self.load_pc_onto_bus();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, adl);
-                    self.end_cycle().await;
-
-                    // Next Cycle - Execute instruction.
-                    const BODY: fn(&mut Registers, u8) = $body;
-                    self.registers.with_mut_ref(|r| BODY(r, data));
-                }
-            };
-        }
+        let instruction_addr = self.registers.with_ref(|r| r.pc);
+        let ctx = self.new_ctx(instruction_addr);
 
         /// Expands to the execution steps for a 4-cycle zero-page X addressing mode instruction.
         /// In addition to the format string and expression body, the offset register must also be
@@ -462,23 +458,48 @@ impl Cpu {
             // JAM
             0x02 => return Err(EmulationError::Halt),
 
-            0x09 => immediate_instr!("ORA #${:02x}", |r, imm| r.set_ac_with_flags(r.ac | imm)),
+            0x09 => {
+                ctx.iem_immediate("ORA", |r, data| r.set_ac_with_flags(r.ac | data))
+                    .await
+            }
 
-            0x29 => immediate_instr!("AND #${:02x}", |r, imm| r.set_ac_with_flags(r.ac & imm)),
+            // 0x29 => immediate_instr!("AND #${:02x}", ),
+            0x29 => {
+                ctx.iem_immediate("AND", |r, data| r.set_ac_with_flags(r.ac & data))
+                    .await
+            }
 
-            0xa0 => immediate_instr!("LDY #${:02x}", |r, imm| r.set_y_with_flags(imm)),
+            0xa0 => {
+                ctx.iem_immediate("LDY", |r, data| r.set_y_with_flags(data))
+                    .await
+            }
 
             0xa1 => indirect_x_instr!("LDA (${:02x},X)", |r, data| r.set_ac_with_flags(data)),
 
-            0xa2 => immediate_instr!("LDX #${:02x}", |r, imm| r.set_x_with_flags(imm)),
+            0xa2 => {
+                ctx.iem_immediate("LDX", |r, data| r.set_x_with_flags(data))
+                    .await
+            }
 
-            0xa4 => zero_page_instr!("LDY ${:02x}", |r, data| r.set_y_with_flags(data)),
+            0xa4 => {
+                ctx.iem_zero_page("LDY", |r, data| r.set_y_with_flags(data))
+                    .await
+            }
 
-            0xa5 => zero_page_instr!("LDA ${:02x}", |r, data| r.set_ac_with_flags(data)),
+            0xa5 => {
+                ctx.iem_zero_page("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
 
-            0xa6 => zero_page_instr!("LDX ${:02x}", |r, data| r.set_x_with_flags(data)),
+            0xa6 => {
+                ctx.iem_zero_page("LDX", |r, data| r.set_x_with_flags(data))
+                    .await
+            }
 
-            0xa9 => immediate_instr!("LDA #${:02x}", |r, imm| r.set_ac_with_flags(imm)),
+            0xa9 => {
+                ctx.iem_immediate("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
 
             0xac => absolute_instr!("LDY ${:04x}", |r, data| r.set_y_with_flags(data)),
 
