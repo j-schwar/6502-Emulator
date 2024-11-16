@@ -1,6 +1,6 @@
 use cpu::Cpu;
 use emu::{Executor, SharedBus};
-use mem::{ResetVector, Rom};
+use mem::{Memory, ResetVector};
 use with_ref::WithRef;
 
 mod cpu;
@@ -13,7 +13,8 @@ fn main() -> emu::Result<()> {
     let bus = SharedBus::default();
     let cpu = Cpu::new(bus.clone());
     let res = ResetVector::new(bus.clone(), 0xf000);
-    let rom = Rom::from_data(
+    let ram = Memory::from_zeroed(bus.clone(), 0x0000, 0x1fff);
+    let rom = Memory::from_readonly_data(
         bus.clone(),
         0xf000,
         [
@@ -27,6 +28,7 @@ fn main() -> emu::Result<()> {
 
     let mut executor = Executor::default();
     executor.add_task(cpu.run());
+    executor.add_task(ram.run());
     executor.add_task(rom.run());
     executor.add_task(res.run());
     executor.poll_until_halt()?;

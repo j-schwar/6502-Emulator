@@ -5,7 +5,6 @@ use with_ref::{ScopedRefCell, WithRef};
 pub enum BusDir {
     #[default]
     Read,
-    #[expect(unused)]
     Write,
 }
 
@@ -32,8 +31,12 @@ pub struct Bus {
 pub struct SharedBus(Rc<ScopedRefCell<Bus>>);
 
 impl SharedBus {
+    /// Gets the current direction of the bus.
+    pub fn dir(&self) -> BusDir {
+        self.with_ref(|bus| bus.dir)
+    }
+
     /// Returns the value of the address bus.
-    #[expect(unused)]
     pub fn address(&self) -> u16 {
         self.with_ref(|bus| bus.address)
     }
@@ -52,7 +55,6 @@ impl SharedBus {
     }
 
     /// Sets the value on the data bus.
-    #[expect(unused)]
     pub fn set_data(&self, value: u8) {
         self.with_mut_ref(|bus| bus.data = value);
     }

@@ -1,8 +1,10 @@
 //! Memory components.
 
+use std::cell::RefCell;
+
 use with_ref::WithRef;
 
-use super::emu::{self, BusDir, Result, SharedBus};
+use super::emu::{self, BusDir, SharedBus};
 
 /// Read-only memory component which listens on the bus in the 2-byte reset vector location.
 ///
@@ -41,41 +43,64 @@ impl ResetVector {
     }
 }
 
-pub struct Rom {
+/// Emulation component modeling a consecutive chunk of readonly or read-write memory.
+///
+/// Multiple components of this type can be used within the same executor to model different memory
+/// regions.
+pub struct Memory {
     bus: SharedBus,
+    readonly: bool,
     start_addr: usize,
-    memory: Box<[u8]>,
+    memory: RefCell<Box<[u8]>>,
 }
 
-impl Rom {
-    pub fn from_data(bus: SharedBus, start_addr: u16, data: impl Into<Box<[u8]>>) -> Self {
-        Self {
+impl Memory {
+    pub fn from_zeroed(bus: SharedBus, start_addr: u16, size: usize) -> Self {
+        let memory = vec![0; size];
+        Memory {
             bus,
+            readonly: false,
             start_addr: start_addr as usize,
-            memory: data.into(),
+            memory: RefCell::new(memory.into()),
         }
     }
-}
 
-impl Rom {
-    fn cycle(&self) {
-        self.bus.with_mut_ref(|bus| {
-            if bus.dir == BusDir::Read {
-                let addr = bus.address as usize;
-                if addr >= self.start_addr && addr < (self.start_addr + self.memory.len()) {
-                    let index = addr - self.start_addr;
-                    let value = self.memory[index];
-                    bus.data = value;
-
-                    log::debug!(target: "rom", "{:#06x} R {:02x}", bus.address, value);
-                }
-            }
-        });
+    pub fn from_readonly_data(bus: SharedBus, start_addr: u16, data: impl Into<Box<[u8]>>) -> Self {
+        Memory {
+            bus,
+            readonly: true,
+            start_addr: start_addr as usize,
+            memory: RefCell::new(data.into()),
+        }
     }
 
-    pub async fn run(&self) -> Result<()> {
+    fn is_address_applicable(&self, address: u16) -> bool {
+        let memory = self.memory.borrow();
+        let address = address as usize;
+        address >= self.start_addr && address < (self.start_addr + memory.len())
+    }
+
+    pub async fn run(&self) -> emu::Result<()> {
         loop {
-            self.cycle();
+            let address = self.bus.address();
+
+            if self.is_address_applicable(address) {
+                let address = address as usize;
+                let index = address - self.start_addr;
+
+                if self.bus.dir() == BusDir::Read {
+                    let memory = self.memory.borrow();
+                    let value = memory[index];
+                    self.bus.set_data(value);
+                    log::debug!(target: "memory", "{:#06x} R {:02x}", address, value);
+                } else if self.bus.dir() == BusDir::Write && !self.readonly {
+                    let mut memory = self.memory.borrow_mut();
+                    let value = self.bus.data();
+                    memory[index] = value;
+                    log::debug!(target: "memory", "{:#06x} W {:02x}", address, value);
+                }
+            }
+
             emu::wait_for_next_cycle().await;
         }
     }
@@ -87,9 +112,32 @@ mod test {
     use crate::emu::*;
 
     #[test]
+    fn memory_read_write() {
+        let bus = SharedBus::default();
+        let mem = Memory::from_zeroed(bus.clone(), 0x2000, 0x1000);
+        let mut executor = Executor::default();
+        executor.add_task(mem.run());
+
+        bus.set_address(0x2abc, BusDir::Write);
+        bus.set_data(0x42);
+        executor.poll().unwrap();
+
+        // Clobber data bus with another write to ensure that reading works correctly.
+        bus.set_address(0x2000, BusDir::Write);
+        bus.set_data(0xff);
+        executor.poll().unwrap();
+
+        bus.set_address(0x2abc, BusDir::Read);
+        executor.poll().unwrap();
+
+        assert_eq!(0x42, bus.data());
+    }
+
+    #[test]
     fn rom_sets_data_bus() {
         let bus = SharedBus::default();
-        let rom = Rom::from_data(bus.clone(), 0, vec![0, 1, 2, 3]);
+        // let rom = Rom::from_data(bus.clone(), 0, vec![0, 1, 2, 3]);
+        let rom = Memory::from_readonly_data(bus.clone(), 0, vec![0, 1, 2, 3]);
 
         let mut executor = Executor::default();
         executor.add_task(rom.run());

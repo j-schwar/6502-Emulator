@@ -633,7 +633,7 @@ impl Cpu {
 mod test {
     use super::*;
     use crate::emu::Executor;
-    use crate::mem::{ResetVector, Rom};
+    use crate::mem::{Memory, ResetVector};
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -644,7 +644,7 @@ mod test {
     fn exec(machine_code: impl AsRef<[u8]>) -> emu::Result<Registers> {
         let bus = SharedBus::default();
         let cpu = Cpu::new(bus.clone());
-        let rom = Rom::from_data(bus.clone(), 0xf000, machine_code.as_ref());
+        let rom = Memory::from_readonly_data(bus.clone(), 0xf000, machine_code.as_ref());
         let res = ResetVector::new(bus.clone(), 0xf000);
 
         let mut executor = Executor::default();
@@ -667,9 +667,9 @@ mod test {
     ) -> emu::Result<Registers> {
         let bus = SharedBus::default();
         let cpu = Cpu::new(bus.clone());
-        let zero_page = Rom::from_data(bus.clone(), 0x0000, zero_page.as_ref());
-        let mem = Rom::from_data(bus.clone(), start_addr, mem.as_ref());
-        let rom = Rom::from_data(bus.clone(), 0xf000, machine_code.as_ref());
+        let zero_page = Memory::from_readonly_data(bus.clone(), 0x0000, zero_page.as_ref());
+        let mem = Memory::from_readonly_data(bus.clone(), start_addr, mem.as_ref());
+        let rom = Memory::from_readonly_data(bus.clone(), 0xf000, machine_code.as_ref());
         let res = ResetVector::new(bus.clone(), 0xf000);
 
         let mut executor = Executor::default();
@@ -693,8 +693,8 @@ mod test {
     ) -> emu::Result<Registers> {
         let bus = SharedBus::default();
         let cpu = Cpu::new(bus.clone());
-        let mem = Rom::from_data(bus.clone(), start_addr, mem.as_ref());
-        let rom = Rom::from_data(bus.clone(), 0xf000, machine_code.as_ref());
+        let mem = Memory::from_readonly_data(bus.clone(), start_addr, mem.as_ref());
+        let rom = Memory::from_readonly_data(bus.clone(), 0xf000, machine_code.as_ref());
         let res = ResetVector::new(bus.clone(), 0xf000);
 
         let mut executor = Executor::default();
