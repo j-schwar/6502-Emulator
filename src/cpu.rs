@@ -138,6 +138,254 @@ impl<'a> ExecCtx<'a> {
         // Next Cycle - Execute instruction.
         self.cpu.registers.with_mut_ref(|r| body(r, data));
     }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with zero-page offset addressing.
+    async fn iem_zero_page_with_offset(
+        &self,
+        offset: u8,
+        offset_register: char,
+        mnemonic: &str,
+        body: fn(&mut Registers, u8),
+    ) {
+        // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
+        let bal = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let effective_address = bal as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Load actual effective address onto bus.
+        let effective_address = effective_address.wrapping_add(offset as u16) & 0x00ff;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Fetch data from effective address, load PC+2 onto bus.
+        let data = self.cpu.bus.data();
+        self.cpu.load_pc_onto_bus();
+        log::info!(target: "instr", "{:#06x} {} ${:02x},{}", self.address, mnemonic, bal, offset_register);
+        self.cpu.end_cycle().await;
+
+        // Next Cycle - Execute instruction.
+        self.cpu.registers.with_mut_ref(|r| body(r, data));
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with zero-page X addressing.
+    ///
+    /// The total duration of instructions of this type is 4 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    /// As with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_zero_page_x(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        let x = self.cpu.registers.with_ref(|r| r.x);
+        self.iem_zero_page_with_offset(x, 'X', mnemonic, body).await;
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with zero-page Y addressing.
+    ///
+    /// The total duration of instructions of this type is 4 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    /// As with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_zero_page_y(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        let y = self.cpu.registers.with_ref(|r| r.y);
+        self.iem_zero_page_with_offset(y, 'Y', mnemonic, body).await;
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with absolute addressing.
+    ///
+    /// The total duration of instructions of this type is 4 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    /// As with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_absolute(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        // Cycle 1 - Fetch low order effective address byte.
+        let adl = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch high order effective address byte.
+        let adh = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let effective_address = ((adh as u16) << 8) | adl as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Fetch data from effective address, load PC+3 onto bus.
+        let data = self.cpu.bus.data();
+        self.cpu.load_pc_onto_bus();
+        log::info!(target: "instr", "{:#06x} {} ${:04x}", self.address, mnemonic, effective_address);
+        self.cpu.end_cycle().await;
+
+        // Next Cycle - Execute instruction.
+        self.cpu.registers.with_mut_ref(|r| body(r, data));
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with absolute offset addressing.
+    async fn iem_absolute_with_offset(
+        &self,
+        offset: u8,
+        offset_register: char,
+        mnemonic: &str,
+        body: fn(&mut Registers, u8),
+    ) {
+        // Cycle 1 - Fetch low order effective address byte.
+        let adl = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch high order effective address byte.
+        let adh = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let (adl, carry) = self.cpu.registers.with_mut_ref(|r| {
+            let (value, carry) = adl.overflowing_add(offset);
+            r.set_carry_flag(carry);
+            (value, carry)
+        });
+        let effective_address = ((adh as u16) << 8) | adl as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Fetch data or recompute effective address depending on if page boundary
+        // was crossed (i.e., the carry bit was set via the previous computation).
+        let data = if !carry {
+            self.cpu.bus.data()
+        } else {
+            let effective_address = ((adh.wrapping_add(1) as u16) << 8) | adl as u16;
+            self.cpu.bus.set_address(effective_address, BusDir::Read);
+            self.cpu.end_cycle().await;
+
+            // Cycle 4 - Fetch data.
+            self.cpu.bus.data()
+        };
+        self.cpu.load_pc_onto_bus();
+        log::info!(target: "instr", "{:#06x} {} ${:04x},{}", self.address, mnemonic, effective_address, offset_register);
+        self.cpu.end_cycle().await;
+
+        // Next Cycle - Execute instruction.
+        self.cpu.registers.with_mut_ref(|r| body(r, data));
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with absolute X addressing.
+    ///
+    /// The total duration of instructions of this type is 4 or 5 cycles depending on whether a page
+    /// boundary is crossed when computing the effective address. It's implied that the first cycle
+    /// for fetching the instruction opcode has already passed before this function is called. As
+    /// with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_absolute_x(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        let offset = self.cpu.registers.with_ref(|r| r.x);
+        self.iem_absolute_with_offset(offset, 'X', mnemonic, body)
+            .await
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with absolute Y addressing.
+    ///
+    /// The total duration of instructions of this type is 4 or 5 cycles depending on whether a page
+    /// boundary is crossed when computing the effective address. It's implied that the first cycle
+    /// for fetching the instruction opcode has already passed before this function is called. As
+    /// with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_absolute_y(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        let offset = self.cpu.registers.with_ref(|r| r.y);
+        self.iem_absolute_with_offset(offset, 'Y', mnemonic, body)
+            .await
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with indirect X addressing.
+    ///
+    /// The total duration of instructions of this type is 6 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    /// As with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_indirect_x(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
+        let bal = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let effective_address = bal as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Load actual effective address onto bus.
+        let x = self.cpu.registers.with_ref(|r| r.x);
+        let effective_address = bal.wrapping_add(x) as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Fetch low order byte of indirect address.
+        let adl = self.cpu.bus.data();
+        let effective_address = bal.wrapping_add(x).wrapping_add(1) as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4 - Fetch high order byte of indirect address.
+        let adh = self.cpu.bus.data();
+        let indirect_address = u16::from_le_bytes([adl, adh]);
+        self.cpu.bus.set_address(indirect_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 5 - Fetch data.
+        let data = self.cpu.bus.data();
+        self.cpu.load_pc_onto_bus();
+        log::info!(target: "instr", "{:#06x} {} (${:02x},X)", self.address, mnemonic, bal);
+        self.cpu.end_cycle().await;
+
+        // Next Cycle - Execute instruction.
+        self.cpu.registers.with_mut_ref(|r| body(r, data));
+    }
+
+    /// Executes an Internal Execution on Memory (IEM) instruction with indirect Y addressing.
+    ///
+    /// The total duration of instructions of this type is 5 or 6 cycles depending on whether a page
+    /// boundary is crossed when computing the effective address. It's implied that the first cycle
+    /// for fetching the instruction opcode has already passed before this function is called. As
+    /// with all IEM instructions, the actual execution of the instruction takes place during the
+    /// fetching and decoding of the next instruction.
+    async fn iem_indirect_y(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
+        // Cycle 1 - Fetch zero page indirect address.
+        let ial = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let indirect_address = ial as u16;
+        self.cpu.bus.set_address(indirect_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch low order byte of base address.
+        let bal = self.cpu.bus.data();
+        let indirect_address = ial.wrapping_add(1) as u16;
+        self.cpu.bus.set_address(indirect_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Fetch high order byte of base address.
+        let bah = self.cpu.bus.data();
+        let (adl, carry) = self.cpu.registers.with_mut_ref(|r| {
+            let (value, carry) = bal.overflowing_add(r.y);
+            r.set_carry_flag(carry);
+            (value, carry)
+        });
+        let effective_address = u16::from_le_bytes([adl, bah]);
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4 - Fetch data or recompute address if carry flag is set.
+        let data = if !carry {
+            self.cpu.bus.data()
+        } else {
+            let adh = bah.wrapping_add(1);
+            let effective_address = u16::from_le_bytes([adl, adh]);
+            self.cpu.bus.set_address(effective_address, BusDir::Read);
+            self.cpu.end_cycle().await;
+
+            // Cycle 5 - Fetch data.
+            self.cpu.bus.data()
+        };
+        self.cpu.load_pc_onto_bus();
+        log::info!(target: "instr", "{:#06x} {} (${:02x}),Y", self.address, mnemonic, ial);
+        self.cpu.end_cycle().await;
+
+        // Next Cycle - Execute instruction.
+        self.cpu.registers.with_mut_ref(|r| body(r, data));
+    }
 }
 
 pub struct Cpu {
@@ -240,213 +488,11 @@ impl Cpu {
     /// encountered.
     ///
     /// Reference for instructions: https://www.masswerk.at/6502/6502_instruction_set.html
-    /// Reference for cycle timings: https://web.archive.org/web/20120227142944if_/http://archive.6502.org:80/datasheets/synertek_hardware_manual.pdf
+    /// Reference for cycle timings:
+    /// https://web.archive.org/web/20120227142944if_/http://archive.6502.org:80/datasheets/synertek_hardware_manual.pdf
     async fn fetch_and_execute(&self) -> emu::Result<()> {
         let instruction_addr = self.registers.with_ref(|r| r.pc);
         let ctx = self.new_ctx(instruction_addr);
-
-        /// Expands to the execution steps for a 4-cycle zero-page X addressing mode instruction.
-        /// In addition to the format string and expression body, the offset register must also be
-        /// supplied to this macro.
-        macro_rules! zero_page_offset_instr {
-            ($fmt:literal, $reg:ident, $body:expr) => {
-                {
-                    // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
-                    let bal = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-                    let effective_address = bal as u16;
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 2 - Load actual effective address onto bus.
-                    let effective_address = self
-                        .registers
-                        .with_ref(|r| effective_address.wrapping_add(r.$reg as u16) & 0x00ff);
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 3 - Fetch data from effective address, load PC+2 onto bus.
-                    let data = self.bus.data();
-                    self.load_pc_onto_bus();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, bal);
-                    self.end_cycle().await;
-
-                    // Next Cycle - Execute instruction.
-                    const BODY: fn(&mut Registers, u8) = $body;
-                    self.registers.with_mut_ref(|r| BODY(r, data));
-                }
-            };
-        }
-
-        /// Expands to the execution steps for a 4-cycle absolute addressing mode instruction.
-        macro_rules! absolute_instr {
-            ($fmt:literal, $body:expr) => {
-                {
-                    // Cycle 1 - Fetch low order effective address byte.
-                    let adl = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-                    self.load_pc_onto_bus();
-                    self.end_cycle().await;
-
-                    // Cycle 2 - Fetch high order effective address byte.
-                    let adh = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-                    let effective_address = ((adh as u16) << 8) | adl as u16;
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 3 - Fetch data from effective address, load PC+3 onto bus.
-                    let data = self.bus.data();
-                    self.load_pc_onto_bus();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, effective_address);
-                    self.end_cycle().await;
-
-                    // Next Cycle - Execute instruction.
-                    const BODY: fn(&mut Registers, u8) = $body;
-                    self.registers.with_mut_ref(|r| BODY(r, data));
-                }
-            };
-        }
-
-        /// Expands to the execution steps for a 4 or 5-cycle absolute with offset addressing mode
-        /// instruction. In addition to the format string and expression body, the offset register
-        /// must also be supplied to this macro.
-        macro_rules! absolute_offset_instr {
-            ($fmt:literal, $reg:ident, $body:expr) => {
-                {
-                    // Cycle 1 - Fetch low order effective address byte.
-                    let adl = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-                    self.load_pc_onto_bus();
-                    self.end_cycle().await;
-
-                    // Cycle 2 - Fetch high order effective address byte.
-                    let adh = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-                    let (adl, carry) = self.registers.with_mut_ref(|r| {
-                        let (value, carry) = adl.overflowing_add(r.$reg);
-                        r.set_carry_flag(carry);
-                        (value, carry)
-                    });
-                    let effective_address = ((adh as u16) << 8) | adl as u16;
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 3 - Fetch data or recompute effective address depending on if page boundary
-                    // was crossed (i.e., the carry bit was set via the previous computation).
-                    let data = if !carry {
-                        self.bus.data()
-                    } else {
-                        let effective_address = ((adh.wrapping_add(1) as u16) << 8) | adl as u16;
-                        self.bus.set_address(effective_address, BusDir::Read);
-                        self.end_cycle().await;
-
-                        // Cycle 4 - Fetch data.
-                        self.bus.data()
-                    };
-                    self.load_pc_onto_bus();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, effective_address);
-                    self.end_cycle().await;
-
-                    // Next Cycle - Execute instruction.
-                    const BODY: fn(&mut Registers, u8) = $body;
-                    self.registers.with_mut_ref(|r| BODY(r, data));
-                }
-            };
-        }
-
-        /// Expands to the execution steps for a 6-cycle indirect X addressing mode instruction.
-        macro_rules! indirect_x_instr {
-            ($fmt:literal, $body:expr) => {
-                {
-                    // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
-                    let bal = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-                    let effective_address = bal as u16;
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 2 - Load actual effective address onto bus.
-                    let x = self.registers.with_ref(|r| r.x);
-                    let effective_address = bal.wrapping_add(x) as u16;
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 3 - Fetch low order byte of indirect address.
-                    let adl = self.bus.data();
-                    let effective_address = bal.wrapping_add(x).wrapping_add(1) as u16;
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 4 - Fetch high order byte of indirect address.
-                    let adh = self.bus.data();
-                    let indirect_address = u16::from_le_bytes([adl, adh]);
-                    self.bus.set_address(indirect_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 5 - Fetch data.
-                    let data = self.bus.data();
-                    self.load_pc_onto_bus();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, bal);
-                    self.end_cycle().await;
-
-                    // Next Cycle - Execute instruction.
-                    const BODY: fn(&mut Registers, u8) = $body;
-                    self.registers.with_mut_ref(|r| BODY(r, data));
-                }
-            };
-        }
-
-        /// Expands to the execution steps for a 5 or 6-cycle indirect Y addressing mode instruction.
-        macro_rules! indirect_y_instr {
-            ($fmt:literal, $body:expr) => {
-                {
-                    // Cycle 1 - Fetch zero page indirect address.
-                    let ial = self.bus.data();
-                    self.set_pc(|pc| pc.wrapping_add(1));
-                    let indirect_address = ial as u16;
-                    self.bus.set_address(indirect_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 2 - Fetch low order byte of base address.
-                    let bal = self.bus.data();
-                    let indirect_address = ial.wrapping_add(1) as u16;
-                    self.bus.set_address(indirect_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 3 - Fetch high order byte of base address.
-                    let bah = self.bus.data();
-                    let (adl, carry) = self.registers.with_mut_ref(|r| {
-                        let (value, carry) = bal.overflowing_add(r.y);
-                        r.set_carry_flag(carry);
-                        (value, carry)
-                    });
-                    let effective_address = u16::from_le_bytes([adl, bah]);
-                    self.bus.set_address(effective_address, BusDir::Read);
-                    self.end_cycle().await;
-
-                    // Cycle 4 - Fetch data or recompute address if carry flag is set.
-                    let data = if !carry {
-                        self.bus.data()
-                    } else {
-                        let adh = bah.wrapping_add(1);
-                        let effective_address = u16::from_le_bytes([adl, adh]);
-                        self.bus.set_address(effective_address, BusDir::Read);
-                        self.end_cycle().await;
-
-                        // Cycle 5 - Fetch data.
-                        self.bus.data()
-                    };
-                    self.load_pc_onto_bus();
-                    log::info!(target: "instr", concat!("{} ", $fmt), instruction_addr, ial);
-                    self.end_cycle().await;
-
-                    // Next Cycle - Execute instruction.
-                    const BODY: fn(&mut Registers, u8) = $body;
-                    self.registers.with_mut_ref(|r| BODY(r, data));
-                }
-            };
-        }
 
         // Cycle 0 - Fetch opcode off of the data bus.
         let opcode = self.bus.data();
@@ -474,7 +520,10 @@ impl Cpu {
                     .await
             }
 
-            0xa1 => indirect_x_instr!("LDA (${:02x},X)", |r, data| r.set_ac_with_flags(data)),
+            0xa1 => {
+                ctx.iem_indirect_x("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
 
             0xa2 => {
                 ctx.iem_immediate("LDX", |r, data| r.set_x_with_flags(data))
@@ -501,29 +550,61 @@ impl Cpu {
                     .await
             }
 
-            0xac => absolute_instr!("LDY ${:04x}", |r, data| r.set_y_with_flags(data)),
-
-            0xad => absolute_instr!("LDA ${:04x}", |r, data| r.set_ac_with_flags(data)),
-
-            0xae => absolute_instr!("LDX ${:04x}", |r, data| r.set_x_with_flags(data)),
-
-            0xb1 => indirect_y_instr!("LDA (${:02x}),Y", |r, data| r.set_ac_with_flags(data)),
-
-            0xb4 => zero_page_offset_instr!("LDY ${:02},X", x, |r, data| r.set_y_with_flags(data)),
-
-            0xb5 => {
-                zero_page_offset_instr!("LDA ${:02x},X", x, |r, data| r.set_ac_with_flags(data))
+            0xac => {
+                ctx.iem_absolute("LDY", |r, data| r.set_y_with_flags(data))
+                    .await
             }
 
-            0xb6 => zero_page_offset_instr!("LDX ${:02x},Y", y, |r, data| r.set_x_with_flags(data)),
+            0xad => {
+                ctx.iem_absolute("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
 
-            0xb9 => absolute_offset_instr!("LDA ${:04x},Y", y, |r, data| r.set_ac_with_flags(data)),
+            0xae => {
+                ctx.iem_absolute("LDX", |r, data| r.set_x_with_flags(data))
+                    .await
+            }
 
-            0xbc => absolute_offset_instr!("LDY ${:04x},X", x, |r, data| r.set_y_with_flags(data)),
+            0xb1 => {
+                ctx.iem_indirect_y("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
 
-            0xbd => absolute_offset_instr!("LDA ${:04x},X", x, |r, data| r.set_ac_with_flags(data)),
+            // 0xb4 => zero_page_offset_instr!("LDY ${:02},X", x, |r, data| r.set_y_with_flags(data)),
+            0xb4 => {
+                ctx.iem_zero_page_x("LDY", |r, data| r.set_y_with_flags(data))
+                    .await
+            }
 
-            0xbe => absolute_offset_instr!("LDX ${:04x},Y", y, |r, data| r.set_x_with_flags(data)),
+            0xb5 => {
+                ctx.iem_zero_page_x("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
+
+            0xb6 => {
+                ctx.iem_zero_page_y("LDX", |r, data| r.set_x_with_flags(data))
+                    .await
+            }
+
+            0xb9 => {
+                ctx.iem_absolute_y("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
+
+            0xbc => {
+                ctx.iem_absolute_x("LDY", |r, data| r.set_y_with_flags(data))
+                    .await
+            }
+
+            0xbd => {
+                ctx.iem_absolute_x("LDA", |r, data| r.set_ac_with_flags(data))
+                    .await
+            }
+
+            0xbe => {
+                ctx.iem_absolute_y("LDX", |r, data| r.set_x_with_flags(data))
+                    .await
+            }
 
             // NOP
             0xea => {
