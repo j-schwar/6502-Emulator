@@ -33,6 +33,12 @@ macro_rules! set_bit {
     };
 }
 
+macro_rules! get_bit {
+    ($receiver:expr, $bit:literal) => {
+        $receiver & $bit != 0
+    };
+}
+
 impl Registers {
     /// Sets the negative (N) flag in the status register.
     fn set_negative_flag(&mut self, value: bool) {
@@ -73,18 +79,26 @@ impl Registers {
         set_bit!(self.sr, 0x01, value);
     }
 
+    /// Gets the carry flag (C) in the status register.
+    fn carry_flag(&self) -> bool {
+        get_bit!(self.sr, 0x01)
+    }
+
+    /// Sets the Accumulator register along with the Negative and Zero flags.
     fn set_ac_with_flags(&mut self, value: u8) {
         self.ac = value;
         self.set_negative_flag(self.ac & 0x80 != 0);
         self.set_zero_flag(self.ac == 0);
     }
 
+    /// Sets the X register along with the Negative and Zero flags.
     fn set_x_with_flags(&mut self, value: u8) {
         self.x = value;
         self.set_negative_flag(self.x & 0x80 != 0);
         self.set_zero_flag(self.x == 0);
     }
 
+    /// Sets the Y register along with the Negative and Zero flags.
     fn set_y_with_flags(&mut self, value: u8) {
         self.y = value;
         self.set_negative_flag(self.y & 0x80 != 0);
@@ -98,6 +112,17 @@ struct ExecCtx<'a> {
 }
 
 impl<'a> ExecCtx<'a> {
+    /// Executes a single cycle instruction.
+    ///
+    /// This function takes 1 cycle to complete. It's implied that the first cycle for fetching the
+    /// opcode has already passed before this function is called.
+    async fn single_cycle(&self, mnemonic: &str, body: fn(&mut Registers)) {
+        self.cpu.registers.with_mut_ref(|r| body(r));
+
+        log::info!(target: "instr", "{:#06x} {}", self.address, mnemonic);
+        self.cpu.end_cycle().await;
+    }
+
     /// Executes an Internal Execution on Memory (IEM) instruction with immediate addressing.
     ///
     /// The total duration of instructions of this type is 2 cycles. It's implied that the first
@@ -107,7 +132,7 @@ impl<'a> ExecCtx<'a> {
     async fn iem_immediate(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
         // Cycle 1 - Fetch operand.
         let data = self.cpu.read_and_inc_pc();
-        log::info!(target: "instr", "{:#06x} {} #${}", self.address, mnemonic, data);
+        log::info!(target: "instr", "{:#06x} {} #${:02x}", self.address, mnemonic, data);
         self.cpu.end_cycle().await;
 
         // Next Cycle - Execute instruction.
@@ -509,7 +534,17 @@ impl Cpu {
                     .await
             }
 
-            // 0x29 => immediate_instr!("AND #${:02x}", ),
+            0x0a => {
+                ctx.single_cycle("ASL", |r| {
+                    let carry = r.ac & 0x80 != 0;
+                    let value = r.ac.wrapping_shl(1);
+                    log::warn!("value = {:02x}, carry = {}", value, carry);
+                    r.set_ac_with_flags(value);
+                    r.set_carry_flag(carry);
+                })
+                .await
+            }
+
             0x29 => {
                 ctx.iem_immediate("AND", |r, data| r.set_ac_with_flags(r.ac & data))
                     .await
@@ -1076,6 +1111,19 @@ mod test {
             0x02, // Halt
         ])?;
         assert_eq!(0x0a, r.ac);
+        Ok(())
+    }
+
+    #[test]
+    fn asl_accumulator() -> emu::Result<()> {
+        init();
+        let r = exec([
+            0xa9, 0x81, // LDA #$81,
+            0x0a, // ASL,
+            0x02, // Halt
+        ])?;
+        assert_eq!(0x02, r.ac);
+        assert!(r.carry_flag());
         Ok(())
     }
 }
