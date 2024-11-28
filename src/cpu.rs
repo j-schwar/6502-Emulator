@@ -4,23 +4,10 @@ use with_ref::{ScopedRefCell, WithRef};
 
 use crate::emu::{self, BusDir, EmulationError, Ptr, SharedBus};
 
-/// Models CPU state.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Registers {
-    /// Program counter register.
-    pub pc: u16,
-    /// Accumulator register.
-    pub ac: u8,
-    /// General purpose X register.
-    pub x: u8,
-    /// General purpose Y register.
-    pub y: u8,
-    /// Status register.
-    pub sr: u8,
-    /// Stack pointer.
-    #[expect(unused)]
-    pub sp: u8,
-}
+/// A collection of flags which make up the processor's status register.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatusRegister(u8);
 
 macro_rules! set_bit {
     ($receiver:expr, $bit:literal, $value:expr) => {
@@ -39,70 +26,90 @@ macro_rules! get_bit {
     };
 }
 
-impl Registers {
+impl StatusRegister {
     /// Sets the negative (N) flag in the status register.
     fn set_negative_flag(&mut self, value: bool) {
-        set_bit!(self.sr, 0x80, value);
+        set_bit!(self.0, 0x80, value);
     }
 
     /// Sets the overflow (V) flag in the status register.
     #[expect(unused)]
     fn set_overflow_flag(&mut self, value: bool) {
-        set_bit!(self.sr, 0x40, value);
+        set_bit!(self.0, 0x40, value);
     }
 
     /// Sets the break flag (B) in the status register.
     #[expect(unused)]
     fn set_break_flag(&mut self, value: bool) {
-        set_bit!(self.sr, 0x10, value);
+        set_bit!(self.0, 0x10, value);
     }
 
     /// Sets the decimal flag (D) in the status register.
     #[expect(unused)]
     fn set_decimal_flag(&mut self, value: bool) {
-        set_bit!(self.sr, 0x08, value);
+        set_bit!(self.0, 0x08, value);
     }
 
     /// Sets the interrupt disable flag (I) in the status register.
     #[expect(unused)]
     fn set_interrupt_flag(&mut self, value: bool) {
-        set_bit!(self.sr, 0x04, value);
+        set_bit!(self.0, 0x04, value);
     }
 
     /// Sets the zero flag (Z) in the status register.
     fn set_zero_flag(&mut self, value: bool) {
-        set_bit!(self.sr, 0x02, value);
+        set_bit!(self.0, 0x02, value);
     }
 
     /// Sets the carry flag (C) in the status register.
     fn set_carry_flag(&mut self, value: bool) {
-        set_bit!(self.sr, 0x01, value);
+        set_bit!(self.0, 0x01, value);
     }
 
     /// Gets the carry flag (C) in the status register.
     fn carry_flag(&self) -> bool {
-        get_bit!(self.sr, 0x01)
+        get_bit!(self.0, 0x01)
     }
+}
 
+/// Models CPU state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Registers {
+    /// Program counter register.
+    pub pc: u16,
+    /// Accumulator register.
+    pub ac: u8,
+    /// General purpose X register.
+    pub x: u8,
+    /// General purpose Y register.
+    pub y: u8,
+    /// Status register.
+    pub sr: StatusRegister,
+    /// Stack pointer.
+    #[expect(unused)]
+    pub sp: u8,
+}
+
+impl Registers {
     /// Sets the Accumulator register along with the Negative and Zero flags.
     fn set_ac_with_flags(&mut self, value: u8) {
         self.ac = value;
-        self.set_negative_flag(self.ac & 0x80 != 0);
-        self.set_zero_flag(self.ac == 0);
+        self.sr.set_negative_flag(self.ac & 0x80 != 0);
+        self.sr.set_zero_flag(self.ac == 0);
     }
 
     /// Sets the X register along with the Negative and Zero flags.
     fn set_x_with_flags(&mut self, value: u8) {
         self.x = value;
-        self.set_negative_flag(self.x & 0x80 != 0);
-        self.set_zero_flag(self.x == 0);
+        self.sr.set_negative_flag(self.x & 0x80 != 0);
+        self.sr.set_zero_flag(self.x == 0);
     }
 
     /// Sets the Y register along with the Negative and Zero flags.
     fn set_y_with_flags(&mut self, value: u8) {
         self.y = value;
-        self.set_negative_flag(self.y & 0x80 != 0);
-        self.set_zero_flag(self.y == 0);
+        self.sr.set_negative_flag(self.y & 0x80 != 0);
+        self.sr.set_zero_flag(self.y == 0);
     }
 }
 
@@ -265,7 +272,7 @@ impl<'a> ExecCtx<'a> {
         self.cpu.set_pc(|pc| pc.wrapping_add(1));
         let (adl, carry) = self.cpu.registers.with_mut_ref(|r| {
             let (value, carry) = adl.overflowing_add(offset);
-            r.set_carry_flag(carry);
+            r.sr.set_carry_flag(carry);
             (value, carry)
         });
         let effective_address = ((adh as u16) << 8) | adl as u16;
@@ -385,7 +392,7 @@ impl<'a> ExecCtx<'a> {
         let bah = self.cpu.bus.data();
         let (adl, carry) = self.cpu.registers.with_mut_ref(|r| {
             let (value, carry) = bal.overflowing_add(r.y);
-            r.set_carry_flag(carry);
+            r.sr.set_carry_flag(carry);
             (value, carry)
         });
         let effective_address = u16::from_le_bytes([adl, bah]);
@@ -540,7 +547,7 @@ impl Cpu {
                     let value = r.ac.wrapping_shl(1);
                     log::warn!("value = {:02x}, carry = {}", value, carry);
                     r.set_ac_with_flags(value);
-                    r.set_carry_flag(carry);
+                    r.sr.set_carry_flag(carry);
                 })
                 .await
             }
@@ -1123,7 +1130,7 @@ mod test {
             0x02, // Halt
         ])?;
         assert_eq!(0x02, r.ac);
-        assert!(r.carry_flag());
+        assert!(r.sr.carry_flag());
         Ok(())
     }
 }
