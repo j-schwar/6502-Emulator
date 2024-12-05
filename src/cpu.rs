@@ -418,6 +418,25 @@ impl<'a> ExecCtx<'a> {
         // Next Cycle - Execute instruction.
         self.cpu.registers.with_mut_ref(|r| body(r, data));
     }
+
+    /// Executes a store instruction with zero page addressing.
+    ///
+    /// The total duration of instructions of this type is 3 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_zero_page(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        // Cycle 1 - Compute effective address and write data to bus.
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let effective_address = self.cpu.bus.data() as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        let value = self.cpu.registers.with_ref(|r| body(r));
+        self.cpu.bus.set_data(value);
+        log::info!(target: "instr", "{:#06x} {} ${:02x}", self.address, mnemonic, effective_address);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
 }
 
 pub struct Cpu {
@@ -557,6 +576,12 @@ impl Cpu {
                     .await
             }
 
+            0x84 => ctx.store_zero_page("STY", |r| r.y).await,
+
+            0x85 => ctx.store_zero_page("STA", |r| r.ac).await,
+
+            0x86 => ctx.store_zero_page("STX", |r| r.x).await,
+
             0xa0 => {
                 ctx.iem_immediate("LDY", |r, data| r.set_y_with_flags(data))
                     .await
@@ -657,7 +682,10 @@ impl Cpu {
                 log::info!(target: "instr", "{} NOP", instruction_addr);
             }
 
-            _ => return Err(EmulationError::InvalidInstruction),
+            _ => {
+                log::error!(target: "instr", "invalid instruction - opcode = {:02x}", opcode);
+                return Err(EmulationError::InvalidInstruction);
+            }
         }
 
         Ok(())
@@ -756,6 +784,25 @@ mod test {
         machine_code: impl AsRef<[u8]>,
     ) -> emu::Result<Registers> {
         exec_with_mem(0x0000, zero_page, machine_code)
+    }
+
+    fn exec_with_memory(machine_code: impl AsRef<[u8]>) -> emu::Result<(Registers, Box<[u8]>)> {
+        let bus = SharedBus::default();
+        let cpu = Cpu::new(bus.clone());
+        let mem = Memory::from_zeroed(bus.clone(), 0x0000, 0xf000);
+        let rom = Memory::from_readonly_data(bus.clone(), 0xf000, machine_code.as_ref());
+        let res = ResetVector::new(bus.clone(), 0xf000);
+
+        {
+            let mut executor = Executor::default();
+            executor.add_task(cpu.run());
+            executor.add_task(mem.run());
+            executor.add_task(rom.run());
+            executor.add_task(res.run());
+            executor.poll_until_halt()?;
+        }
+
+        Ok((cpu.registers.with_ref(|r| *r), mem.into_data()))
     }
 
     #[test]
@@ -1131,6 +1178,25 @@ mod test {
         ])?;
         assert_eq!(0x02, r.ac);
         assert!(r.sr.carry_flag());
+        Ok(())
+    }
+
+    #[test]
+    fn store_zero_page() -> emu::Result<()> {
+        init();
+        let (_, m) = exec_with_memory([
+            0xa0, 0x01, // LDY #$01
+            0xa2, 0x02, // LDX #$02
+            0xa9, 0x03, // LDA #$03
+            0x84, 0x01, // STY $01
+            0x86, 0x02, // STX $02
+            0x85, 0x03, // STA $03
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0x01, m[1]);
+        assert_eq!(0x02, m[2]);
+        assert_eq!(0x03, m[3]);
         Ok(())
     }
 }

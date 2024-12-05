@@ -74,6 +74,11 @@ impl Memory {
         }
     }
 
+    /// Takes ownership of the internal buffer used by this object.
+    pub fn into_data(self) -> Box<[u8]> {
+        self.memory.take()
+    }
+
     fn is_address_applicable(&self, address: u16) -> bool {
         let memory = self.memory.borrow();
         let address = address as usize;
