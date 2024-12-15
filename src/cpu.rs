@@ -437,6 +437,52 @@ impl<'a> ExecCtx<'a> {
         self.cpu.load_pc_onto_bus();
         self.cpu.end_cycle().await;
     }
+
+    /// Executes a store instruction with zero page offset addressing.
+    async fn store_zero_page_offset(
+        &self,
+        offset: u8,
+        offset_register: char,
+        mnemonic: &str,
+        body: fn(&Registers) -> u8,
+    ) {
+        // Cycle 1 - Fetch zero page base address
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let base_address = self.cpu.bus.data();
+        self.cpu.bus.set_address(base_address as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Compute effective address
+        let effective_address = base_address.wrapping_add(offset) as u16;
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.bus.set_data(self.cpu.registers.with_ref(body));
+        log::info!(target: "instr", "{:#06x} {} ${:02x},{}", self.address, mnemonic, base_address, offset_register);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
+
+    /// Executes a store instruction with zero page X addressing.
+    ///
+    /// The total duration of instructions of this type is 4 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_zero_page_x(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        let offset = self.cpu.registers.with_ref(|r| r.x);
+        self.store_zero_page_offset(offset, 'X', mnemonic, body)
+            .await;
+    }
+
+    /// Executes a store instruction with zero page Y addressing.
+    ///
+    /// The total duration of instructions of this type is 4 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_zero_page_y(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        let offset = self.cpu.registers.with_ref(|r| r.y);
+        self.store_zero_page_offset(offset, 'Y', mnemonic, body)
+            .await;
+    }
 }
 
 pub struct Cpu {
@@ -581,6 +627,12 @@ impl Cpu {
             0x85 => ctx.store_zero_page("STA", |r| r.ac).await,
 
             0x86 => ctx.store_zero_page("STX", |r| r.x).await,
+
+            0x94 => ctx.store_zero_page_x("STY", |r| r.y).await,
+
+            0x95 => ctx.store_zero_page_x("STA", |r| r.ac).await,
+
+            0x96 => ctx.store_zero_page_y("STX", |r| r.x).await,
 
             0xa0 => {
                 ctx.iem_immediate("LDY", |r, data| r.set_y_with_flags(data))
@@ -1197,6 +1249,24 @@ mod test {
         assert_eq!(0x01, m[1]);
         assert_eq!(0x02, m[2]);
         assert_eq!(0x03, m[3]);
+        Ok(())
+    }
+
+    #[test]
+    fn store_zero_page_offset() -> emu::Result<()> {
+        init();
+        let (_, m) = exec_with_memory([
+            0xa0, 0x01, // LDY #$01
+            0xa2, 0x02, // LDX #$02
+            0xa9, 0x03, // LDA #$03
+            0x94, 0x00, // STY $00,X ; store 1 -> $02
+            0x95, 0x01, // STA $01,X ; store 3 -> $03
+            0x96, 0x00, // STX $00,Y ; store 2 -> $01
+        ])?;
+
+        assert_eq!(0x01, m[2]);
+        assert_eq!(0x03, m[3]);
+        assert_eq!(0x02, m[1]);
         Ok(())
     }
 }
