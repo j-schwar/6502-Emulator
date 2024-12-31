@@ -508,6 +508,64 @@ impl<'a> ExecCtx<'a> {
         self.cpu.load_pc_onto_bus();
         self.cpu.end_cycle().await;
     }
+
+    /// Executes a store instruction with absolute offset addressing.
+    async fn store_absolute_offset(
+        &self,
+        offset: u8,
+        offset_register: char,
+        mnemonic: &str,
+        body: fn(&Registers) -> u8,
+    ) {
+        // Cycle 1 - Fetch low order byte of address
+        let adl = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch high order by of address
+        let adh = self.cpu.bus.data();
+        let (adl, carry) = self.cpu.registers.with_mut_ref(|r| {
+            let (value, carry) = adl.overflowing_add(offset);
+            r.sr.set_carry_flag(carry);
+            (value, carry)
+        });
+        let adh = adh.wrapping_add(if carry { 1 } else { 0 });
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let effective_address = u16::from_be_bytes([adh, adl]);
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Store data
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.bus.set_data(self.cpu.registers.with_ref(body));
+        log::info!(target: "instr", "{:#06x} {} ${:04x},{}", self.address, mnemonic, effective_address, offset_register);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
+
+    /// Executes a store instruction with absolute X addressing.
+    ///
+    /// The total duration of instructions of this type is 5 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_absolute_x(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        let offset = self.cpu.registers.with_ref(|r| r.x);
+        self.store_absolute_offset(offset, 'X', mnemonic, body)
+            .await;
+    }
+
+    /// Executes a store instruction with absolute Y addressing.
+    ///
+    /// The total duration of instructions of this type is 5 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_absolute_y(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        let offset = self.cpu.registers.with_ref(|r| r.y);
+        self.store_absolute_offset(offset, 'Y', mnemonic, body)
+            .await;
+    }
 }
 
 pub struct Cpu {
@@ -664,6 +722,10 @@ impl Cpu {
             0x95 => ctx.store_zero_page_x("STA", |r| r.ac).await,
 
             0x96 => ctx.store_zero_page_y("STX", |r| r.x).await,
+
+            0x99 => ctx.store_absolute_y("STA", |r| r.ac).await,
+
+            0x9d => ctx.store_absolute_x("STA", |r| r.ac).await,
 
             0xa0 => {
                 ctx.iem_immediate("LDY", |r, data| r.set_y_with_flags(data))
@@ -1318,6 +1380,23 @@ mod test {
         assert_eq!(0x01, m[0x1001]);
         assert_eq!(0x02, m[0x1002]);
         assert_eq!(0x03, m[0x1003]);
+        Ok(())
+    }
+
+    #[test]
+    fn store_absolute_offset() -> emu::Result<()> {
+        init();
+        let (_, m) = exec_with_memory([
+            0xa9, 0xaa, // LDA #$aa
+            0xa0, 0x01, // LDY #$01
+            0xa2, 0x02, // LDX #$02
+            0x99, 0x00, 0x10, // STA $1000,Y
+            0x9d, 0x00, 0x10, // STA $1000,X
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0xaa, m[0x1001]);
+        assert_eq!(0xaa, m[0x1002]);
         Ok(())
     }
 }
