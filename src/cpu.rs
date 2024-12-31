@@ -119,6 +119,21 @@ struct ExecCtx<'a> {
 }
 
 impl<'a> ExecCtx<'a> {
+    /// Returns the value of the `X` register.
+    fn reg_x(&self) -> u8 {
+        self.cpu.registers.with_ref(|r| r.x)
+    }
+
+    /// Returns the value of the `Y` register.
+    fn reg_y(&self) -> u8 {
+        self.cpu.registers.with_ref(|r| r.y)
+    }
+
+    /// Returns the value of the accumulator register.
+    fn reg_ac(&self) -> u8 {
+        self.cpu.registers.with_ref(|r| r.ac)
+    }
+
     /// Executes a single cycle instruction.
     ///
     /// This function takes 1 cycle to complete. It's implied that the first cycle for fetching the
@@ -566,6 +581,77 @@ impl<'a> ExecCtx<'a> {
         self.store_absolute_offset(offset, 'Y', mnemonic, body)
             .await;
     }
+
+    /// Executes a store instruction with indirect X addressing.
+    ///
+    /// The total duration of instructions of this type is 6 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_indirect_x(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        // Cycle 1 - Grab low byte of base address
+        let bal = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        self.cpu.bus.set_address(bal as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Load indirect address onto bus
+        let bal = bal.wrapping_add(self.reg_x());
+        self.cpu.bus.set_address(bal as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Read low byte of effective address from bus
+        let adl = self.cpu.bus.data();
+        let bal = bal.wrapping_add(1);
+        self.cpu.bus.set_address(bal as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4 - Read high byte of effective address from bus
+        let adh = self.cpu.bus.data();
+        let effective_address = u16::from_be_bytes([adh, adl]);
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.bus.set_data(self.cpu.registers.with_ref(body));
+        log::info!(target: "instr", "{:#06x} {} (${:02x},X)", self.address, mnemonic, bal);
+        self.cpu.end_cycle().await;
+
+        // Cycle 5
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
+
+    /// Executes a store instruction with indirect Y addressing.
+    ///
+    /// The total duration of instructions of this type is 6 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_indirect_y(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        // Cycle 1 - Fetch indirect address from zero page
+        let ial = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        self.cpu.bus.set_address(ial as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch low byte of effective address
+        let bal = self.cpu.bus.data();
+        let ial = ial.wrapping_add(1);
+        self.cpu.bus.set_address(ial as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Fetch high byte of effective address
+        let bah = self.cpu.bus.data();
+        let adl = bal.wrapping_add(self.reg_y());
+        let adh = bah;
+        let effective_address = u16::from_be_bytes([adh, adl]);
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4 - Write data
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.bus.set_data(self.cpu.registers.with_ref(body));
+        log::info!(target: "instr", "{:#06x} {} (${:02x}),Y", self.address, mnemonic, ial);
+        self.cpu.end_cycle().await;
+
+        // Cycle 5
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
 }
 
 pub struct Cpu {
@@ -705,6 +791,8 @@ impl Cpu {
                     .await
             }
 
+            0x81 => ctx.store_indirect_x("STA", |r| r.ac).await,
+
             0x84 => ctx.store_zero_page("STY", |r| r.y).await,
 
             0x85 => ctx.store_zero_page("STA", |r| r.ac).await,
@@ -716,6 +804,8 @@ impl Cpu {
             0x8d => ctx.store_absolute("STA", |r| r.ac).await,
 
             0x8e => ctx.store_absolute("STX", |r| r.x).await,
+
+            0x91 => ctx.store_indirect_y("STA", |r| r.ac).await,
 
             0x94 => ctx.store_zero_page_x("STY", |r| r.y).await,
 
@@ -1397,6 +1487,46 @@ mod test {
 
         assert_eq!(0xaa, m[0x1001]);
         assert_eq!(0xaa, m[0x1002]);
+        Ok(())
+    }
+
+    #[test]
+    fn store_indirect_x() -> emu::Result<()> {
+        init();
+
+        // Store #$aa at $1000, $1000 is read from the zero page at $01 and $02.
+        let (_, m) = exec_with_memory([
+            0xa9, 0x00, // LDA #$00
+            0x85, 0x01, // STA $01
+            0xa9, 0x10, // LDA #$10
+            0x85, 0x02, // STA $02
+            0xa2, 0x01, // LDX #$01
+            0xa9, 0xaa, // LDA #$aa
+            0x81, 0x00, // STA ($00,X)
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0xaa, m[0x1000]);
+        Ok(())
+    }
+
+    #[test]
+    fn store_indirect_y() -> emu::Result<()> {
+        init();
+
+        // Store #$aa at $1001, $1000 is read from the zero page at $00 and $01.
+        let (_, m) = exec_with_memory([
+            0xa9, 0x00, // LDA #$00
+            0x85, 0x00, // STA $01
+            0xa9, 0x10, // LDA #$10
+            0x85, 0x01, // STA $02
+            0xa0, 0x01, // LDY #$01
+            0xa9, 0xaa, // LDA #$aa
+            0x91, 0x00, // STA ($00),Y
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0xaa, m[0x1001]);
         Ok(())
     }
 }
