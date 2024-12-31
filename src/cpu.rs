@@ -154,6 +154,7 @@ impl<'a> ExecCtx<'a> {
     async fn iem_immediate(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
         // Cycle 1 - Fetch operand.
         let data = self.cpu.read_and_inc_pc();
+        self.cpu.load_pc_onto_bus();
         log::info!(target: "instr", "{:#06x} {} #${:02x}", self.address, mnemonic, data);
         self.cpu.end_cycle().await;
 
@@ -169,9 +170,7 @@ impl<'a> ExecCtx<'a> {
     /// fetching and decoding of the next instruction.
     async fn iem_zero_page(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
         // Cycle 1 - Fetch ADL, compute and load effective address onto bus.
-        let adl = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
-
+        let adl = self.cpu.read_and_inc_pc();
         let effective_address = adl as u16;
         self.cpu.bus.set_address(effective_address, BusDir::Read);
         self.cpu.end_cycle().await;
@@ -195,8 +194,7 @@ impl<'a> ExecCtx<'a> {
         body: fn(&mut Registers, u8),
     ) {
         // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
-        let bal = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let bal = self.cpu.read_and_inc_pc();
         let effective_address = bal as u16;
         self.cpu.bus.set_address(effective_address, BusDir::Read);
         self.cpu.end_cycle().await;
@@ -246,14 +244,12 @@ impl<'a> ExecCtx<'a> {
     /// fetching and decoding of the next instruction.
     async fn iem_absolute(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
         // Cycle 1 - Fetch low order effective address byte.
-        let adl = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let adl = self.cpu.read_and_inc_pc();
         self.cpu.load_pc_onto_bus();
         self.cpu.end_cycle().await;
 
         // Cycle 2 - Fetch high order effective address byte.
-        let adh = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let adh = self.cpu.read_and_inc_pc();
         let effective_address = ((adh as u16) << 8) | adl as u16;
         self.cpu.bus.set_address(effective_address, BusDir::Read);
         self.cpu.end_cycle().await;
@@ -277,14 +273,12 @@ impl<'a> ExecCtx<'a> {
         body: fn(&mut Registers, u8),
     ) {
         // Cycle 1 - Fetch low order effective address byte.
-        let adl = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let adl = self.cpu.read_and_inc_pc();
         self.cpu.load_pc_onto_bus();
         self.cpu.end_cycle().await;
 
         // Cycle 2 - Fetch high order effective address byte.
-        let adh = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let adh = self.cpu.read_and_inc_pc();
         let (adl, carry) = self.cpu.registers.with_mut_ref(|r| {
             let (value, carry) = adl.overflowing_add(offset);
             r.sr.set_carry_flag(carry);
@@ -348,8 +342,7 @@ impl<'a> ExecCtx<'a> {
     /// fetching and decoding of the next instruction.
     async fn iem_indirect_x(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
         // Cycle 1 - Fetch base address (BAL), load partial effective address onto bus.
-        let bal = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let bal = self.cpu.read_and_inc_pc();
         let effective_address = bal as u16;
         self.cpu.bus.set_address(effective_address, BusDir::Read);
         self.cpu.end_cycle().await;
@@ -391,8 +384,7 @@ impl<'a> ExecCtx<'a> {
     /// fetching and decoding of the next instruction.
     async fn iem_indirect_y(&self, mnemonic: &str, body: fn(&mut Registers, u8)) {
         // Cycle 1 - Fetch zero page indirect address.
-        let ial = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let ial = self.cpu.read_and_inc_pc();
         let indirect_address = ial as u16;
         self.cpu.bus.set_address(indirect_address, BusDir::Read);
         self.cpu.end_cycle().await;
@@ -505,14 +497,12 @@ impl<'a> ExecCtx<'a> {
     /// cycle for fetching the instruction opcode has already passed before this function is called.
     async fn store_absolute(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
         // Cycle 1 - Fetch low order byte of address
-        let adl = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let adl = self.cpu.read_and_inc_pc();
         self.cpu.load_pc_onto_bus();
         self.cpu.end_cycle().await;
 
         // Cycle 2 - Fetch high order by of address
-        let adh = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let adh = self.cpu.read_and_inc_pc();
         let effective_address = u16::from_be_bytes([adh, adl]);
         self.cpu.bus.set_address(effective_address, BusDir::Write);
         self.cpu.bus.set_data(self.cpu.registers.with_ref(body));
@@ -533,8 +523,7 @@ impl<'a> ExecCtx<'a> {
         body: fn(&Registers) -> u8,
     ) {
         // Cycle 1 - Fetch low order byte of address
-        let adl = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let adl = self.cpu.read_and_inc_pc();
         self.cpu.load_pc_onto_bus();
         self.cpu.end_cycle().await;
 
@@ -588,8 +577,7 @@ impl<'a> ExecCtx<'a> {
     /// cycle for fetching the instruction opcode has already passed before this function is called.
     async fn store_indirect_x(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
         // Cycle 1 - Grab low byte of base address
-        let bal = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let bal = self.cpu.read_and_inc_pc();
         self.cpu.bus.set_address(bal as u16, BusDir::Read);
         self.cpu.end_cycle().await;
 
@@ -623,8 +611,7 @@ impl<'a> ExecCtx<'a> {
     /// cycle for fetching the instruction opcode has already passed before this function is called.
     async fn store_indirect_y(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
         // Cycle 1 - Fetch indirect address from zero page
-        let ial = self.cpu.bus.data();
-        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let ial = self.cpu.read_and_inc_pc();
         self.cpu.bus.set_address(ial as u16, BusDir::Read);
         self.cpu.end_cycle().await;
 
@@ -724,24 +711,22 @@ impl Cpu {
     /// Specifically, this function does the following in order:
     /// 1. Reads from the data bus.
     /// 2. Increments the program counter register.
-    /// 3. Loads the program counter register onto the address bus.
     ///
     /// The address being read from is determine by whatever was on the address bus at the end of
     /// the previous cycle.
     fn read_and_inc_pc(&self) -> u8 {
         let data = self.bus.data();
-        self.registers.with_mut_ref(|r| {
-            r.pc = r.pc.wrapping_add(1);
-            self.bus.set_address(r.pc, BusDir::Read);
-        });
-
+        self.set_pc(|pc| pc.wrapping_add(1));
         data
     }
 
+    /// Sets the program counter to the result of a given callback which receives the current
+    /// program counter value as a parameter.
     fn set_pc(&self, f: impl FnOnce(u16) -> u16) {
         self.registers.with_mut_ref(|r| r.pc = f(r.pc));
     }
 
+    /// Loads the program counter onto the address bus setting the bus direction to [`BusDir::Read`].
     fn load_pc_onto_bus(&self) {
         self.registers.with_ref(|r| {
             self.bus.set_address(r.pc, BusDir::Read);
