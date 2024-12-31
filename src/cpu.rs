@@ -483,6 +483,31 @@ impl<'a> ExecCtx<'a> {
         self.store_zero_page_offset(offset, 'Y', mnemonic, body)
             .await;
     }
+
+    /// Executes a store instruction with absolute addressing.
+    ///
+    /// The total duration of instructions of this type is 4 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn store_absolute(&self, mnemonic: &str, body: fn(&Registers) -> u8) {
+        // Cycle 1 - Fetch low order byte of address
+        let adl = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch high order by of address
+        let adh = self.cpu.bus.data();
+        self.cpu.set_pc(|pc| pc.wrapping_add(1));
+        let effective_address = u16::from_be_bytes([adh, adl]);
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.bus.set_data(self.cpu.registers.with_ref(body));
+        log::info!(target: "instr", "{:#06x} {} ${:04x}", self.address, mnemonic, effective_address);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
 }
 
 pub struct Cpu {
@@ -627,6 +652,12 @@ impl Cpu {
             0x85 => ctx.store_zero_page("STA", |r| r.ac).await,
 
             0x86 => ctx.store_zero_page("STX", |r| r.x).await,
+
+            0x8c => ctx.store_absolute("STY", |r| r.y).await,
+
+            0x8d => ctx.store_absolute("STA", |r| r.ac).await,
+
+            0x8e => ctx.store_absolute("STX", |r| r.x).await,
 
             0x94 => ctx.store_zero_page_x("STY", |r| r.y).await,
 
@@ -1262,11 +1293,31 @@ mod test {
             0x94, 0x00, // STY $00,X ; store 1 -> $02
             0x95, 0x01, // STA $01,X ; store 3 -> $03
             0x96, 0x00, // STX $00,Y ; store 2 -> $01
+            0x02, // Halt
         ])?;
 
         assert_eq!(0x01, m[2]);
         assert_eq!(0x03, m[3]);
         assert_eq!(0x02, m[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn store_absolute() -> emu::Result<()> {
+        init();
+        let (_, m) = exec_with_memory([
+            0xa0, 0x01, // LDY #$01
+            0xa9, 0x02, // LDA #$02
+            0xa2, 0x03, // LDX #$03
+            0x8c, 0x01, 0x10, // STY $1001
+            0x8d, 0x02, 0x10, // STA $1002
+            0x8e, 0x03, 0x10, // STX $1003
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0x01, m[0x1001]);
+        assert_eq!(0x02, m[0x1002]);
+        assert_eq!(0x03, m[0x1003]);
         Ok(())
     }
 }
