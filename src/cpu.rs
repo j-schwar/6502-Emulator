@@ -70,6 +70,16 @@ impl StatusRegister {
     fn carry_flag(&self) -> bool {
         get_bit!(self.0, 0x01)
     }
+
+    /// Gets the zero flag (Z) in the status register.
+    fn zero_flag(&self) -> bool {
+        get_bit!(self.0, 0x02)
+    }
+
+    /// Gets the negative flag (N) in the status register.
+    fn negative_flag(&self) -> bool {
+        get_bit!(self.0, 0x80)
+    }
 }
 
 /// Models CPU state.
@@ -639,6 +649,138 @@ impl<'a> ExecCtx<'a> {
         self.cpu.load_pc_onto_bus();
         self.cpu.end_cycle().await;
     }
+
+    /// Executes a read, modify, write instruction with zero page addressing.
+    ///
+    /// The total duration of instructions of this type is 5 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn rmw_zero_page(&self, mnemonic: &str, body: fn(&mut Registers, u8) -> u8) {
+        // Cycle 1 - Fetch zero page effective address
+        let adl = self.cpu.read_and_inc_pc();
+        self.cpu.bus.set_address(adl as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch data
+        let data = self.cpu.bus.data();
+        self.cpu.bus.set_address(adl as u16, BusDir::Write);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Modify and write data
+        let modified_data = self.cpu.registers.with_mut_ref(|r| body(r, data));
+        self.cpu.bus.set_address(adl as u16, BusDir::Write);
+        self.cpu.bus.set_data(modified_data);
+        log::info!(target: "instr", "{:#06x} {} ${:02x}", self.address, mnemonic, adl);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
+
+    /// Executes a read, modify, write instruction with zero page X addressing.
+    ///
+    /// The total duration of instructions of this type is 6 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn rmw_zero_page_x(&self, mnemonic: &str, body: fn(&mut Registers, u8) -> u8) {
+        // Cycle 1 - Fetch zero page base address
+        let bal = self.cpu.read_and_inc_pc();
+        self.cpu.bus.set_address(bal as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Compute effective address
+        let adl = bal.wrapping_add(self.reg_x()); // No carry
+        self.cpu.bus.set_address(adl as u16, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Load data
+        let data = self.cpu.bus.data();
+        self.cpu.bus.set_address(adl as u16, BusDir::Write);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4 - Modify data and write back
+        let modified_data = self.cpu.registers.with_mut_ref(|r| body(r, data));
+        self.cpu.bus.set_address(adl as u16, BusDir::Write);
+        self.cpu.bus.set_data(modified_data);
+        log::info!(target: "instr", "{:#06x} {} ${:02x},X", self.address, mnemonic, bal);
+        self.cpu.end_cycle().await;
+
+        // Cycle 5
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
+
+    /// Executes a read, modify, write instruction with absolute addressing.
+    ///
+    /// The total duration of instructions of this type is 6 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn rmw_absolute(&self, mnemonic: &str, body: fn(&mut Registers, u8) -> u8) {
+        // Cycle 1 - Fetch low byte of effective address
+        let adl = self.cpu.read_and_inc_pc();
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch high byte of effective address
+        let adh = self.cpu.read_and_inc_pc();
+        let effective_address = u16::from_be_bytes([adh, adl]);
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Fetch data
+        let data = self.cpu.bus.data();
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4 - Modify and write data
+        let modified_data = self.cpu.registers.with_mut_ref(|r| body(r, data));
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.bus.set_data(modified_data);
+        log::info!(target: "instr", "{:#06x} {} ${:04x}", self.address, mnemonic, effective_address);
+        self.cpu.end_cycle().await;
+
+        // Cycle 5
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
+
+    /// Executes a read, modify, write instruction with absolute X addressing.
+    ///
+    /// The total duration of instructions of this type is 7 cycles. It's implied that the first
+    /// cycle for fetching the instruction opcode has already passed before this function is called.
+    async fn rmw_absolute_x(&self, mnemonic: &str, body: fn(&mut Registers, u8) -> u8) {
+        // Cycle 1 - Fetch low byte of effective address
+        let adl = self.cpu.read_and_inc_pc();
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+
+        // Cycle 2 - Fetch high byte of effective address
+        let adh = self.cpu.read_and_inc_pc();
+        let base_address = u16::from_be_bytes([adh, adl]);
+        self.cpu.bus.set_address(base_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 3 - Compute actual effective address
+        let (adl, carry) = adl.overflowing_add(self.reg_x());
+        let adh = adh.wrapping_add(if carry { 1 } else { 0 });
+        let effective_address = u16::from_be_bytes([adh, adl]);
+        self.cpu.bus.set_address(effective_address, BusDir::Read);
+        self.cpu.end_cycle().await;
+
+        // Cycle 4 - Fetch data
+        let data = self.cpu.bus.data();
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.end_cycle().await;
+
+        // Cycle 5 - Modify and write data
+        let modified_data = self.cpu.registers.with_mut_ref(|r| body(r, data));
+        self.cpu.bus.set_address(effective_address, BusDir::Write);
+        self.cpu.bus.set_data(modified_data);
+        log::info!(target: "instr", "{:#06x} {} ${:04x},X", self.address, mnemonic, base_address);
+        self.cpu.end_cycle().await;
+
+        // Cycle 6
+        self.cpu.load_pc_onto_bus();
+        self.cpu.end_cycle().await;
+    }
 }
 
 pub struct Cpu {
@@ -664,6 +806,27 @@ impl Cpu {
     /// Along with calling [`core::wait_for_next_cycle`], this function performs additional logging
     /// of the bus and register state for debugging.
     async fn end_cycle(&self) {
+        self.registers.with_ref(|r| {
+            log::debug!(
+                target: "cpu",
+                "registers AC:{:02x} X:{:02x} Y:{:02x}",
+                r.ac,
+                r.x,
+                r.y,
+            );
+
+            log::debug!(
+                target: "cpu",
+                "flags     N:{} Z:{} C:{} I:{} D:{} V:{}",
+                r.sr.negative_flag() as i32,
+                r.sr.zero_flag() as i32,
+                r.sr.carry_flag() as i32,
+                0, // TODO: implement getter
+                0, // TODO: implement getter
+                0, // TODO: implement getter
+            );
+        });
+        log::debug!(target: "cpu", "end cycle");
         emu::wait_for_next_cycle().await;
     }
     /// Reads a single byte from the bus at a given address.
@@ -760,16 +923,15 @@ impl Cpu {
                     .await
             }
 
-            0x0a => {
-                ctx.single_cycle("ASL", |r| {
-                    let carry = r.ac & 0x80 != 0;
-                    let value = r.ac.wrapping_shl(1);
-                    log::warn!("value = {:02x}, carry = {}", value, carry);
-                    r.set_ac_with_flags(value);
-                    r.sr.set_carry_flag(carry);
-                })
-                .await
-            }
+            0x06 => ctx.rmw_zero_page("ASL", asl).await,
+
+            0x0a => ctx.single_cycle("ASL", |r| r.ac = asl(r, r.ac)).await,
+
+            0x0e => ctx.rmw_absolute("ASL", asl).await,
+
+            0x16 => ctx.rmw_zero_page_x("ASL", asl).await,
+
+            0x1e => ctx.rmw_absolute_x("ASL", asl).await,
 
             0x29 => {
                 ctx.iem_immediate("AND", |r, data| r.set_ac_with_flags(r.ac & data))
@@ -917,6 +1079,19 @@ impl Cpu {
             self.fetch_and_execute().await?;
         }
     }
+}
+
+/// Implements the arithmatic left shift (ASL) operation.
+///
+/// The carry, zero, and negative flags are set in the provided [`Registers`] reference based on
+/// the result of this operation.
+fn asl(r: &mut Registers, data: u8) -> u8 {
+    let result = data.wrapping_shl(1);
+    r.sr.set_carry_flag(data & 0x80 != 0);
+    r.sr.set_zero_flag(result == 0);
+    r.sr.set_negative_flag(result & 0x80 != 0);
+    log::debug!(target: "instr", "ASL {:02x} -> {:02x}", data, result);
+    result
 }
 
 #[cfg(test)]
@@ -1398,6 +1573,76 @@ mod test {
         ])?;
         assert_eq!(0x02, r.ac);
         assert!(r.sr.carry_flag());
+        Ok(())
+    }
+
+    #[test]
+    fn asl_zero_page() -> emu::Result<()> {
+        init();
+        let (r, m) = exec_with_memory([
+            0xa9, 0x81, // LDA #$81
+            0x85, 0x00, // STA $00
+            0x06, 0x00, // ASL $00
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0x02, m[0x0000]);
+        assert!(r.sr.carry_flag());
+        assert!(!r.sr.zero_flag());
+        assert!(!r.sr.negative_flag());
+        Ok(())
+    }
+
+    #[test]
+    fn asl_zero_page_x() -> emu::Result<()> {
+        init();
+        let (r, m) = exec_with_memory([
+            0xa9, 0x81, // LDA #$81
+            0x85, 0x01, // STA $01
+            0xa2, 0x01, // LDX #$01
+            0x16, 0x00, // ASL $00,X
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0x02, m[0x0001]);
+        assert!(r.sr.carry_flag());
+        assert!(!r.sr.zero_flag());
+        assert!(!r.sr.negative_flag());
+        Ok(())
+    }
+
+    #[test]
+    fn asl_absolute() -> emu::Result<()> {
+        init();
+        let (r, m) = exec_with_memory([
+            0xa9, 0x7f, // LDA #$7f
+            0x8d, 0x00, 0x10, // STA $1000
+            0x0e, 0x00, 0x10, // ASL $1000
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0xfe, m[0x1000]);
+        assert!(!r.sr.carry_flag());
+        assert!(!r.sr.zero_flag());
+        assert!(r.sr.negative_flag());
+        Ok(())
+    }
+
+    #[test]
+    fn asl_absolute_x() -> emu::Result<()> {
+        init();
+        let (r, m) = exec_with_memory([
+            0xa9, 0x80, // LDA #$80
+            0xa2, 0x01, // LDX #$01
+            0x8d, 0x01, 0x10, // STA $1001
+            0x1e, 0x00, 0x10, // ASL $1000,X
+            0x02, // Halt
+        ])?;
+
+        assert_eq!(0x00, m[0x1001]);
+        assert!(r.sr.carry_flag());
+        assert!(r.sr.zero_flag());
+        assert!(!r.sr.negative_flag());
         Ok(())
     }
 
