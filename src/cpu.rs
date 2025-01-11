@@ -937,10 +937,20 @@ impl Cpu {
 
             0x1e => ctx.rmw_absolute_x("ASL", asl).await,
 
+            0x26 => ctx.rmw_zero_page("ROL", rol).await,
+
             0x29 => {
                 ctx.iem_immediate("AND", |r, data| r.set_ac_with_flags(r.ac & data))
                     .await
             }
+
+            0x2a => ctx.single_cycle("ROL", |r| r.ac = rol(r, r.ac)).await,
+
+            0x2e => ctx.rmw_absolute("ROL", rol).await,
+
+            0x36 => ctx.rmw_zero_page_x("ROL", rol).await,
+
+            0x3e => ctx.rmw_absolute_x("ROL", rol).await,
 
             0x46 => ctx.rmw_zero_page("LSR", lsr).await,
 
@@ -951,6 +961,16 @@ impl Cpu {
             0x56 => ctx.rmw_zero_page_x("LSR", lsr).await,
 
             0x5e => ctx.rmw_absolute_x("LSR", lsr).await,
+
+            0x66 => ctx.rmw_zero_page("ROR", ror).await,
+
+            0x6a => ctx.single_cycle("ROR", |r| r.ac = ror(r, r.ac)).await,
+
+            0x6e => ctx.rmw_absolute("ROR", ror).await,
+
+            0x76 => ctx.rmw_zero_page_x("ROR", ror).await,
+
+            0x7e => ctx.rmw_absolute_x("ROR", ror).await,
 
             0x81 => ctx.store_indirect_x("STA", |r| r.ac).await,
 
@@ -1166,5 +1186,31 @@ fn inc(r: &mut Registers, data: u8) -> u8 {
     r.sr.set_zero_flag(result == 0);
     r.sr.set_negative_flag(result & 0x80 != 0);
     log::debug!(target: "instr", "DEC {:02x} -> {:02x}", data, result);
+    result
+}
+
+/// Implements the rotate left (ROL) operation.
+///
+/// The carry, zero, and negative flags are set in the provided [`Registers`] reference based on
+/// the result of this operation.
+fn rol(r: &mut Registers, data: u8) -> u8 {
+    let result = data.rotate_left(1);
+    r.sr.set_carry_flag(data & 0x80 != 0);
+    r.sr.set_zero_flag(result == 0);
+    r.sr.set_negative_flag(result & 0x80 != 0);
+    log::debug!(target: "instr", "ROL {:02x} -> {:02x}", data, result);
+    result
+}
+
+/// Implements the rotate right (ROR) operation.
+///
+/// The carry, zero, and negative flags are set in the provided [`Registers`] reference based on
+/// the result of this operation.
+fn ror(r: &mut Registers, data: u8) -> u8 {
+    let result = data.rotate_right(1);
+    r.sr.set_carry_flag(data & 0x01 != 0);
+    r.sr.set_zero_flag(result == 0);
+    r.sr.set_negative_flag(result & 0x80 != 0);
+    log::debug!(target: "instr", "ROL {:02x} -> {:02x}", data, result);
     result
 }

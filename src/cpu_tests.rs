@@ -758,3 +758,37 @@ fn inc() -> emu::Result<()> {
     test_rmw(opcodes, 0x7f, 0x80, None)?;
     Ok(())
 }
+
+#[test]
+fn rol() -> emu::Result<()> {
+    let opcodes = Opcodes {
+        accumulator: Some(0x2a),
+        zero_page: Some(0x26),
+        zero_page_x: Some(0x36),
+        absolute: Some(0x2e),
+        absolute_x: Some(0x3e),
+        ..Default::default()
+    };
+
+    test_rmw(opcodes, 0x00, 0x00, Some(false))?;
+    test_rmw(opcodes, 0x01, 0x02, Some(false))?;
+    test_rmw(opcodes, 0x80, 0x01, Some(true))?;
+    Ok(())
+}
+
+#[test]
+fn ror() -> emu::Result<()> {
+    let opcodes = Opcodes {
+        accumulator: Some(0x6a),
+        zero_page: Some(0x66),
+        zero_page_x: Some(0x76),
+        absolute: Some(0x6e),
+        absolute_x: Some(0x7e),
+        ..Default::default()
+    };
+
+    test_rmw(opcodes, 0x00, 0x00, Some(false))?;
+    test_rmw(opcodes, 0x01, 0x80, Some(true))?;
+    test_rmw(opcodes, 0x80, 0x40, Some(false))?;
+    Ok(())
+}
