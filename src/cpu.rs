@@ -140,6 +140,7 @@ impl<'a> ExecCtx<'a> {
     }
 
     /// Returns the value of the accumulator register.
+    #[expect(dead_code)]
     fn reg_ac(&self) -> u8 {
         self.cpu.registers.with_ref(|r| r.ac)
     }
@@ -916,7 +917,10 @@ impl Cpu {
 
         match opcode {
             // JAM
-            0x02 => return Err(EmulationError::Halt),
+            0x02 => {
+                log::warn!(target: "instr", "{instruction_addr:#06x} halt ({opcode:#04x})");
+                return Err(EmulationError::Halt);
+            }
 
             0x09 => {
                 ctx.iem_immediate("ORA", |r, data| r.set_ac_with_flags(r.ac | data))
@@ -937,6 +941,16 @@ impl Cpu {
                 ctx.iem_immediate("AND", |r, data| r.set_ac_with_flags(r.ac & data))
                     .await
             }
+
+            0x46 => ctx.rmw_zero_page("LSR", lsr).await,
+
+            0x4a => ctx.single_cycle("LSR", |r| r.ac = lsr(r, r.ac)).await,
+
+            0x4e => ctx.rmw_absolute("LSR", lsr).await,
+
+            0x56 => ctx.rmw_zero_page_x("LSR", lsr).await,
+
+            0x5e => ctx.rmw_absolute_x("LSR", lsr).await,
 
             0x81 => ctx.store_indirect_x("STA", |r| r.ac).await,
 
@@ -1019,7 +1033,6 @@ impl Cpu {
                     .await
             }
 
-            // 0xb4 => zero_page_offset_instr!("LDY ${:02},X", x, |r, data| r.set_y_with_flags(data)),
             0xb4 => {
                 ctx.iem_zero_page_x("LDY", |r, data| r.set_y_with_flags(data))
                     .await
@@ -1055,6 +1068,14 @@ impl Cpu {
                     .await
             }
 
+            0xc6 => ctx.rmw_zero_page("DEC", dec).await,
+
+            0xce => ctx.rmw_absolute("DEC", dec).await,
+
+            0xd6 => ctx.rmw_zero_page_x("DEC", dec).await,
+
+            0xde => ctx.rmw_absolute_x("DEC", dec).await,
+
             // NOP
             0xea => {
                 // Cycle 1 - Do nothing.
@@ -1064,9 +1085,26 @@ impl Cpu {
                 log::info!(target: "instr", "{} NOP", instruction_addr);
             }
 
+            0xe6 => ctx.rmw_zero_page("INC", inc).await,
+
+            0xee => ctx.rmw_absolute("INC", inc).await,
+
+            0xf6 => ctx.rmw_zero_page_x("INC", inc).await,
+
+            0xfe => ctx.rmw_absolute_x("INC", inc).await,
+
             _ => {
-                log::error!(target: "instr", "invalid instruction - opcode = {:02x}", opcode);
-                return Err(EmulationError::InvalidInstruction);
+                log::error!(
+                    target: "instr",
+                    "{:#06x} invalid instruction - opcode = {:02x}",
+                    instruction_addr,
+                    opcode
+                );
+
+                return Err(EmulationError::InvalidInstruction {
+                    opcode,
+                    address: instruction_addr,
+                });
             }
         }
 
@@ -1091,6 +1129,43 @@ fn asl(r: &mut Registers, data: u8) -> u8 {
     r.sr.set_zero_flag(result == 0);
     r.sr.set_negative_flag(result & 0x80 != 0);
     log::debug!(target: "instr", "ASL {:02x} -> {:02x}", data, result);
+    result
+}
+
+/// Implements the logical right shift (LSR) operation.
+///
+/// The carry, zero, and negative flags are set in the provided [`Registers`] reference based on
+/// the result of this operation.
+fn lsr(r: &mut Registers, data: u8) -> u8 {
+    let result = data.wrapping_shr(1);
+    r.sr.set_carry_flag(data & 0x01 != 0);
+    r.sr.set_zero_flag(result == 0);
+    r.sr.set_negative_flag(false);
+    log::debug!(target: "instr", "LSR {:02x} -> {:02x}", data, result);
+    result
+}
+
+/// Implements the decrement (DEC) operation.
+///
+/// The zero and negative flags are set in the provided [`Registers`] reference based on the result
+/// of this operation.
+fn dec(r: &mut Registers, data: u8) -> u8 {
+    let result = data.wrapping_sub(1);
+    r.sr.set_zero_flag(result == 0);
+    r.sr.set_negative_flag(result & 0x80 != 0);
+    log::debug!(target: "instr", "DEC {:02x} -> {:02x}", data, result);
+    result
+}
+
+/// Implements the increment (INC) operation.
+///
+/// The zero and negative flags are set in the provided [`Registers`] reference based on the result
+/// of this operation.
+fn inc(r: &mut Registers, data: u8) -> u8 {
+    let result = data.wrapping_add(1);
+    r.sr.set_zero_flag(result == 0);
+    r.sr.set_negative_flag(result & 0x80 != 0);
+    log::debug!(target: "instr", "DEC {:02x} -> {:02x}", data, result);
     result
 }
 
@@ -1188,16 +1263,30 @@ mod test {
         let rom = Memory::from_readonly_data(bus.clone(), 0xf000, machine_code.as_ref());
         let res = ResetVector::new(bus.clone(), 0xf000);
 
-        {
+        let result = {
             let mut executor = Executor::default();
             executor.add_task(cpu.run());
             executor.add_task(mem.run());
             executor.add_task(rom.run());
             executor.add_task(res.run());
-            executor.poll_until_halt()?;
-        }
+            executor.poll_until_halt()
+        };
 
-        Ok((cpu.registers.with_ref(|r| *r), mem.into_data()))
+        match result {
+            Ok(_) => Ok((cpu.registers.with_ref(|r| *r), mem.into_data())),
+
+            Err(EmulationError::InvalidInstruction { opcode, address }) => {
+                let mut buf = Vec::new();
+                rom.dump_around(&mut buf, address).unwrap();
+                let s = String::from_utf8_lossy(buf.as_slice());
+                for line in s.lines() {
+                    log::error!(target: "dump", "{line}");
+                }
+                Err(EmulationError::InvalidInstruction { opcode, address })
+            }
+
+            Err(err) => Err(err),
+        }
     }
 
     #[test]
@@ -1564,89 +1653,6 @@ mod test {
     }
 
     #[test]
-    fn asl_accumulator() -> emu::Result<()> {
-        init();
-        let r = exec([
-            0xa9, 0x81, // LDA #$81,
-            0x0a, // ASL,
-            0x02, // Halt
-        ])?;
-        assert_eq!(0x02, r.ac);
-        assert!(r.sr.carry_flag());
-        Ok(())
-    }
-
-    #[test]
-    fn asl_zero_page() -> emu::Result<()> {
-        init();
-        let (r, m) = exec_with_memory([
-            0xa9, 0x81, // LDA #$81
-            0x85, 0x00, // STA $00
-            0x06, 0x00, // ASL $00
-            0x02, // Halt
-        ])?;
-
-        assert_eq!(0x02, m[0x0000]);
-        assert!(r.sr.carry_flag());
-        assert!(!r.sr.zero_flag());
-        assert!(!r.sr.negative_flag());
-        Ok(())
-    }
-
-    #[test]
-    fn asl_zero_page_x() -> emu::Result<()> {
-        init();
-        let (r, m) = exec_with_memory([
-            0xa9, 0x81, // LDA #$81
-            0x85, 0x01, // STA $01
-            0xa2, 0x01, // LDX #$01
-            0x16, 0x00, // ASL $00,X
-            0x02, // Halt
-        ])?;
-
-        assert_eq!(0x02, m[0x0001]);
-        assert!(r.sr.carry_flag());
-        assert!(!r.sr.zero_flag());
-        assert!(!r.sr.negative_flag());
-        Ok(())
-    }
-
-    #[test]
-    fn asl_absolute() -> emu::Result<()> {
-        init();
-        let (r, m) = exec_with_memory([
-            0xa9, 0x7f, // LDA #$7f
-            0x8d, 0x00, 0x10, // STA $1000
-            0x0e, 0x00, 0x10, // ASL $1000
-            0x02, // Halt
-        ])?;
-
-        assert_eq!(0xfe, m[0x1000]);
-        assert!(!r.sr.carry_flag());
-        assert!(!r.sr.zero_flag());
-        assert!(r.sr.negative_flag());
-        Ok(())
-    }
-
-    #[test]
-    fn asl_absolute_x() -> emu::Result<()> {
-        init();
-        let (r, m) = exec_with_memory([
-            0xa9, 0x80, // LDA #$80
-            0xa2, 0x01, // LDX #$01
-            0x8d, 0x01, 0x10, // STA $1001
-            0x1e, 0x00, 0x10, // ASL $1000,X
-            0x02, // Halt
-        ])?;
-
-        assert_eq!(0x00, m[0x1001]);
-        assert!(r.sr.carry_flag());
-        assert!(r.sr.zero_flag());
-        assert!(!r.sr.negative_flag());
-        Ok(())
-    }
-
-    #[test]
     fn store_zero_page() -> emu::Result<()> {
         init();
         let (_, m) = exec_with_memory([
@@ -1757,6 +1763,169 @@ mod test {
         ])?;
 
         assert_eq!(0xaa, m[0x1001]);
+        Ok(())
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Opcodes {
+        _implicit: Option<u8>,
+        accumulator: Option<u8>,
+        zero_page: Option<u8>,
+        zero_page_x: Option<u8>,
+        _zero_page_y: Option<u8>,
+        absolute: Option<u8>,
+        absolute_x: Option<u8>,
+        _absolute_y: Option<u8>,
+        _indirect_x: Option<u8>,
+        _indirect_y: Option<u8>,
+    }
+
+    /// Tests a read, modify, write instruction through all possible addressing modes.
+    fn test_rmw(
+        opcodes: Opcodes,
+        initial: u8,
+        expected: u8,
+        expect_carry: Option<bool>,
+    ) -> emu::Result<()> {
+        let assert_flags = |r: &Registers| {
+            if let Some(expect_carry) = expect_carry {
+                assert_eq!(expect_carry, r.sr.carry_flag(), "carry flag");
+            }
+
+            assert_eq!(expected == 0, r.sr.zero_flag(), "zero flag");
+            assert_eq!(expected & 0x80 != 0, r.sr.negative_flag(), "negative flag");
+        };
+
+        init();
+
+        // Accumulator
+        log::info!(target: "test", "starting rmw accumulator");
+        if let Some(opcode) = opcodes.accumulator {
+            let (r, _) = exec_with_memory([0xa9, initial, opcode, 0x02])?;
+            assert_eq!(expected, r.ac);
+            assert_flags(&r);
+        }
+
+        // Zero Page
+        log::info!(target: "test", "starting rmw zero page");
+        if let Some(opcode) = opcodes.zero_page {
+            let (r, m) = exec_with_memory([
+                0xa9, initial, // LDA <initial>
+                0x85, 0x00, // STA $00
+                opcode, 0x00, // <opcode> $00
+                0x02, // Halt
+            ])?;
+            assert_eq!(expected, m[0x00]);
+            assert_flags(&r);
+        }
+
+        // Zero Page X
+        log::info!(target: "test", "starting rmw zero page x");
+        if let Some(opcode) = opcodes.zero_page_x {
+            let (r, m) = exec_with_memory([
+                0xa9, initial, // LDA <initial>
+                0x85, 0x01, // STA $01
+                0xa2, 0x01, // LDX #$01
+                opcode, 0x00, // <opcode> $00,X
+                0x02, // Halt
+            ])?;
+            assert_eq!(expected, m[0x01]);
+            assert_flags(&r);
+        }
+
+        // Absolute
+        log::info!(target: "test", "starting rmw absolute");
+        if let Some(opcode) = opcodes.absolute {
+            let (r, m) = exec_with_memory([
+                0xa9, initial, // LDA <initial>
+                0x8d, 0x00, 0x10, // STA $1000
+                opcode, 0x00, 0x10, // <opcode> $1000
+                0x02, // Halt
+            ])?;
+            assert_eq!(expected, m[0x1000]);
+            assert_flags(&r);
+        }
+
+        // Absolute X
+        log::info!(target: "test", "starting rmw absolute x");
+        if let Some(opcode) = opcodes.absolute_x {
+            let (r, m) = exec_with_memory([
+                0xa9, initial, // LDA <initial>
+                0xa2, 0x01, // LDX #$01
+                0x8d, 0x01, 0x10, // STA $1001
+                opcode, 0x00, 0x10, // <opcode> $1000,X
+                0x02, // Halt
+            ])?;
+            assert_eq!(expected, m[0x1001]);
+            assert_flags(&r);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn asl() -> emu::Result<()> {
+        let opcodes = Opcodes {
+            accumulator: Some(0x0a),
+            zero_page: Some(0x06),
+            zero_page_x: Some(0x16),
+            absolute: Some(0x0e),
+            absolute_x: Some(0x1e),
+            ..Default::default()
+        };
+
+        test_rmw(opcodes, 0x81, 0x02, Some(true))?;
+        test_rmw(opcodes, 0x80, 0x00, Some(true))?;
+        test_rmw(opcodes, 0x7f, 0xfe, Some(false))?;
+        Ok(())
+    }
+
+    #[test]
+    fn lsr() -> emu::Result<()> {
+        let opcodes = Opcodes {
+            accumulator: Some(0x4a),
+            zero_page: Some(0x46),
+            zero_page_x: Some(0x56),
+            absolute: Some(0x4e),
+            absolute_x: Some(0x5e),
+            ..Default::default()
+        };
+
+        test_rmw(opcodes, 0x81, 0x40, Some(true))?;
+        test_rmw(opcodes, 0x80, 0x40, Some(false))?;
+        test_rmw(opcodes, 0x7f, 0x3f, Some(true))?;
+        Ok(())
+    }
+
+    #[test]
+    fn dec() -> emu::Result<()> {
+        let opcodes = Opcodes {
+            zero_page: Some(0xc6),
+            zero_page_x: Some(0xd6),
+            absolute: Some(0xce),
+            absolute_x: Some(0xde),
+            ..Default::default()
+        };
+
+        test_rmw(opcodes, 0x00, 0xff, None)?;
+        test_rmw(opcodes, 0x01, 0x00, None)?;
+        test_rmw(opcodes, 0x80, 0x7f, None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn inc() -> emu::Result<()> {
+        let opcodes = Opcodes {
+            zero_page: Some(0xe6),
+            zero_page_x: Some(0xf6),
+            absolute: Some(0xee),
+            absolute_x: Some(0xfe),
+            ..Default::default()
+        };
+
+        test_rmw(opcodes, 0x00, 0x01, None)?;
+        test_rmw(opcodes, 0xff, 0x00, None)?;
+        test_rmw(opcodes, 0x7f, 0x80, None)?;
         Ok(())
     }
 }

@@ -75,8 +75,58 @@ impl Memory {
     }
 
     /// Takes ownership of the internal buffer used by this object.
+    #[cfg(test)]
     pub fn into_data(self) -> Box<[u8]> {
         self.memory.take()
+    }
+
+    /// Writes a textual dump of a range of this memory component to a given writer.
+    #[cfg(test)]
+    pub fn dump<W>(&self, w: &mut W, start: u16, end: u16) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        debug_assert!(start <= end);
+
+        let memory = self.memory.borrow();
+        let bytes_per_line = 16;
+        let start = start.saturating_sub(start % bytes_per_line);
+        let end = end.saturating_add(bytes_per_line - end % bytes_per_line);
+
+        for i in start..end {
+            if i % bytes_per_line == 0 {
+                if i != start {
+                    writeln!(w)?;
+                }
+
+                write!(w, "{:#06x} ", i)?;
+            }
+
+            if let Some(index) = (i as usize).checked_sub(self.start_addr) {
+                if let Some(value) = memory.get(index) {
+                    write!(w, "{:02x} ", value)?;
+                } else {
+                    write!(w, ".. ")?;
+                }
+            } else {
+                write!(w, ".. ")?;
+            }
+        }
+
+        w.flush()?;
+        Ok(())
+    }
+
+    /// Writes a textual dump of a region of memory around a given address from this memory
+    /// component to a given writer.
+    #[cfg(test)]
+    pub fn dump_around<W>(&self, w: &mut W, address: u16) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        let start = address.saturating_sub(16);
+        let end = address.saturating_add(16);
+        self.dump(w, start, end)
     }
 
     fn is_address_applicable(&self, address: u16) -> bool {

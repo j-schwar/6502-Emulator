@@ -6,7 +6,10 @@ use std::fmt::Display;
 #[derive(Debug, PartialEq, Eq)]
 pub enum EmulationError {
     InvalidPtr,
-    InvalidInstruction,
+    InvalidInstruction {
+        opcode: u8,
+        address: u16,
+    },
     Decode,
     Halt,
 }
@@ -15,7 +18,7 @@ impl Display for EmulationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EmulationError::InvalidPtr => write!(f, "invalid pointer"),
-            EmulationError::InvalidInstruction => write!(f, "invalid instruction"),
+            EmulationError::InvalidInstruction { .. } => write!(f, "invalid instruction"),
             EmulationError::Decode => write!(f, "decode error"),
             EmulationError::Halt => write!(f, "halt"),
         }
