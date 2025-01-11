@@ -6,10 +6,7 @@ use std::fmt::Display;
 #[derive(Debug, PartialEq, Eq)]
 pub enum EmulationError {
     InvalidPtr,
-    InvalidInstruction {
-        opcode: u8,
-        address: u16,
-    },
+    InvalidInstruction { opcode: u8, address: u16 },
     Decode,
     Halt,
 }

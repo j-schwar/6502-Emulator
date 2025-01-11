@@ -7,6 +7,9 @@ mod cpu;
 mod emu;
 mod mem;
 
+#[cfg(test)]
+mod cpu_tests;
+
 fn main() -> emu::Result<()> {
     env_logger::init();
 
